@@ -49,6 +49,7 @@ DEVICE_MODELS = {
     "MD": {
         "name": "诺基亚 XG-040G-MD（移动）",
         "uboot_dir": "md-uboot",   # preloader/fip/sysupgrade.itb 所在目录
+        "default_user": "CMCCAdmin",  # 出厂 Web 超管账号（仅作交互输入的回车默认值）
         "default_pass": "aDm8H%MdA",  # 仅作首次交互输入的提示默认值
     },
 }
@@ -349,7 +350,10 @@ def get_web_credentials(args):
     user = getattr(args, "web_user", None) or read_env(f"{model}_WEB_USER")
     if not user:
         print(f"\n[web] 当前机型：{prof['name']}")
-        user = ask(f"Web 超管用户名（将写入 .env 的 {model}_WEB_USER）")
+        du = prof.get("default_user")
+        user = ask(
+            f"Web 超管用户名（回车默认 {du}）" if du
+            else "Web 超管用户名", du)
         while not user:
             user = ask("用户名不能为空，请重新输入")
     saved = read_env(f"{model}_WEB_PASS")

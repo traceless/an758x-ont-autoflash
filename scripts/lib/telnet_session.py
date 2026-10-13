@@ -1,0 +1,160 @@
+"""telnetlib 封装：登录光猫到 root # 提示符，发送命令并捕获输出。
+
+跨平台（macOS/Linux/Windows 均自带 telnetlib，Python 3.13 起需改用 telnetlib3）。
+"""
+import re
+import telnetlib
+import time
+
+
+class TelnetSession:
+    """光猫 telnet 会话。
+
+    主登录方式：login_admin（CMCCAdmin 直接登录到 root #，无需 su）。
+    兼容旧路径：login_user + su（user → $ → su → #，适用于 CMCCAdmin 不能直接登录的机型）。
+    命令执行：发命令 + echo 唯一标记，读到标记即视为完成，输出干净。
+    """
+
+    def __init__(self, host, port=23, timeout=20, log=True):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.log = log
+        self.tn = None
+
+    def connect(self):
+        if self.log:
+            print(f"[telnet] 连接 {self.host}:{self.port} ...")
+        self.tn = telnetlib.Telnet(self.host, self.port, self.timeout)
+        if self.log:
+            print("[telnet] 已连接")
+
+    def _expect(self, pattern, timeout=None):
+        """等待正则匹配。返回匹配到的全部缓冲。失败抛 TimeoutError/EOFError。"""
+        t = timeout if timeout is not None else self.timeout
+        if isinstance(pattern, str):
+            pattern = pattern.encode()
+        if not hasattr(pattern, "pattern"):
+            pattern = re.compile(pattern)
+        try:
+            idx, _, data = self.tn.expect([pattern], timeout=t)
+        except EOFError:
+            raise EOFError("telnet 连接被设备关闭（可能 telnet 未开启或有残留会话）")
+        if idx == -1:
+            raise TimeoutError(f"等待 {pattern.pattern!r} 超时（{t}s），收尾: {data[-200:]!r}")
+        return data
+
+    def connect_login_user(self, user, user_pass, su_pass=None, retries=3):
+        """连接 + login_user (+ su)，带 EOFError 自动重试。
+
+        设备 telnet 服务刚开有时不稳定，连接后立即断开，
+        重试 2~3 次通常能成功。
+        """
+        last_err = None
+        for attempt in range(1, retries + 1):
+            try:
+                if self.tn:
+                    self.close()
+                self.connect()
+                time.sleep(0.5)
+                self.login_user(user, user_pass)
+                if su_pass:
+                    self.su(su_pass)
+                return True
+            except (EOFError, OSError) as e:
+                last_err = e
+                if attempt < retries:
+                    print(f"[telnet] 连接或登录失败（{e}），2s 后重试（{attempt}/{retries}）...")
+                    time.sleep(2)
+        raise RuntimeError(
+            f"telnet 登录失败（重试 {retries} 次）: {last_err}\n"
+            "  可能原因：1) telnet 未开启（先跑 enable-telnet）"
+            "  2) 有残留 telnet 会话占用"
+        )
+
+    def login_admin(self, admin_user, admin_pass):
+        """超管直接登录到 root (# 提示符)。CMCCAdmin 登录即 root，无需 su。"""
+        self._expect(rb"[Ll]ogin[: ]*")
+        self.tn.write(admin_user.encode() + b"\n")
+        if self.log:
+            print(f"[telnet] 已发送用户名: {admin_user}")
+
+        self._expect(rb"[Pp]assword[: ]*")
+        self.tn.write(admin_pass.encode() + b"\n")
+        if self.log:
+            print("[telnet] 已发送超管密码")
+
+        self._expect(rb"# *$", timeout=10)
+        if self.log:
+            print("[telnet] 登录成功，已进入 root (#)")
+        return True
+
+    def login(self, admin_user, admin_pass):
+        """主登录入口：超管直接登录到 root (#)。"""
+        return self.login_admin(admin_user, admin_pass)
+
+    def login_user(self, user, user_pass):
+        """兼容旧路径：仅登录到 user 普通 shell（$ 提示符）。"""
+        self._expect(rb"[Ll]ogin[: ]*")
+        self.tn.write(user.encode() + b"\n")
+        if self.log:
+            print(f"[telnet] 已发送用户名: {user}")
+
+        self._expect(rb"[Pp]assword[: ]*")
+        self.tn.write(user_pass.encode() + b"\n")
+        if self.log:
+            print("[telnet] 已发送 user 密码")
+
+        self._expect(rb"[$#] *$", timeout=10)
+        return True
+
+    def su(self, su_pass):
+        """兼容旧路径：在 user shell 里 su 提权到 root #。"""
+        self.tn.write(b"su\n")
+        if self.log:
+            print("[telnet] 已发送 su")
+
+        self._expect(rb"[Pp]assword[: ]*")
+        self.tn.write(su_pass.encode() + b"\n")
+        if self.log:
+            print("[telnet] 已发送 su 密码")
+
+        self._expect(rb"# *$", timeout=10)
+        if self.log:
+            print("[telnet] 登录成功，已进入 root (#)")
+        return True
+
+    def run(self, cmd, timeout=300):
+        """发送命令并等待结束。返回命令输出（字节）。
+
+        实现：发命令 + echo 唯一标记，读至标记即为输出结束。
+        长命令（如 dd|tftp 备份）可用大 timeout。
+        """
+        marker = f"__FLASH_END_{int(time.time() * 1000)}_{hash(cmd) & 0xffff:04x}__"
+        # 清空缓冲里残留
+        self.tn.read_very_eager()
+        self.tn.write(cmd.encode() + b"\n")
+        self.tn.write(b"echo " + marker.encode() + b"\n")
+        data = self._expect(re.escape(marker.encode()), timeout=timeout)
+        # 去掉标记行本身（marker 出现位置之后的 echo 输出）
+        idx = data.rfind(marker.encode())
+        if idx != -1:
+            # 去掉命令回显本身 + marker 行
+            head = data[:idx]
+            # 找到命令回显行（第一行）的换行，去掉
+            first_nl = head.find(b"\n")
+            if first_nl != -1:
+                head = head[first_nl + 1:]
+            # 去掉末尾 echo marker 那行的前缀
+            # head 现在不包含 marker，但可能包含 "echo __..." 命令本身
+            return head
+        return data
+
+    def close(self):
+        if self.tn:
+            try:
+                self.tn.write(b"exit\n")
+            except Exception:
+                pass
+            self.tn.close()
+            self.tn = None

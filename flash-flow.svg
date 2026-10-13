@@ -1,0 +1,120 @@
+<svg viewBox="0 0 720 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="XG-040G-MD 刷机流程">
+  <defs>
+    <style>
+      .bg { fill: #F7F7F8; }
+      .th { fill: #171717; font: 500 14px/20px "SF Pro Text","PingFang SC",system-ui,sans-serif; }
+      .ts { fill: #52525B; font: 400 12px/18px "SF Pro Text","PingFang SC",system-ui,sans-serif; }
+      .arr { stroke: #0FDC78; stroke-width: 1.5; stroke-linecap: round; fill: none; }
+      .leader { stroke: #52525B; stroke-width: .75; stroke-linecap: round; stroke-dasharray: 4 4; fill: none; }
+      .bnd { fill: none; stroke: rgba(23,23,23,0.12); stroke-dasharray: 5 4; }
+      .neutral { fill: #F7F7F8; stroke: rgba(23,23,23,0.12); }
+      .brand { fill: #E5FFF2; stroke: #0FDC78; }
+      .brand-th { fill: #004D26; }
+      .accent { fill: #EAFBF8; stroke: #27D2BF; }
+      .accent-th { fill: #0F766E; }
+      .accent-ts { fill: #27D2BF; }
+      @media (prefers-color-scheme: dark) {
+        .bg { fill: #171717; }
+        .th { fill: #E5E5E5; }
+        .ts { fill: #A1A1AA; }
+        .leader { stroke: #A1A1AA; }
+        .bnd { stroke: rgba(229,229,229,0.12); }
+        .neutral { fill: #171717; stroke: rgba(229,229,229,0.12); }
+        .brand { fill: #004D26; stroke: #32F08C; }
+        .brand-th { fill: #E5FFF2; }
+        .accent { fill: #123F3C; stroke: #27D2BF; }
+        .accent-th { fill: #CCFBF1; }
+        .accent-ts { fill: #27D2BF; }
+      }
+    </style>
+    <marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M1 1 L7 4 L1 7 Z" fill="#0FDC78"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="720" height="620"/>
+
+  <!-- 阶段一 -->
+  <rect class="bnd" x="40" y="60" width="420" height="212" rx="12"/>
+  <text class="ts" x="60" y="84">① 原厂固件阶段（telnet + tftp）</text>
+
+  <g>
+    <rect class="neutral" x="80" y="96" width="340" height="44" rx="8"/>
+    <text class="th" x="100" y="114">flash.py fetch-supass</text>
+    <text class="ts" x="100" y="131">Web 登录提取 SuPassword → .env</text>
+  </g>
+  <path class="arr" d="M250 140 L250 150" marker-end="url(#ah)"/>
+  <g>
+    <rect class="neutral" x="80" y="154" width="340" height="44" rx="8"/>
+    <text class="th" x="100" y="172">flash.py backup</text>
+    <text class="ts" x="100" y="189">telnet user→su→root，仅 mtd6 或全量 → backup/</text>
+  </g>
+  <path class="arr" d="M250 198 L250 208" marker-end="url(#ah)"/>
+  <g>
+    <rect class="neutral" x="80" y="212" width="340" height="44" rx="8"/>
+    <text class="th" x="100" y="230">flash.py run-stock2ubi</text>
+    <text class="ts" x="100" y="247">curl 下载执行，起 :3333</text>
+  </g>
+
+  <!-- 右侧手动操作 -->
+  <text class="th" x="590" y="76" text-anchor="middle">你只需动手 4 次</text>
+
+  <g>
+    <rect class="neutral" x="490" y="88" width="180" height="40" rx="8"/>
+    <text class="th" x="506" y="105">① 网卡设多 IP</text>
+    <text class="ts" x="506" y="121">net-help 查命令</text>
+  </g>
+  <path class="leader" d="M490 108 L460 108"/>
+
+  <g>
+    <rect class="brand" x="490" y="136" width="180" height="40" rx="8"/>
+    <text class="th brand-th" x="506" y="153">② 超管密码</text>
+    <text class="ts brand-th" x="506" y="169">aDm8H%MdA 固定，回车即可</text>
+  </g>
+  <path class="leader" d="M490 156 L460 156"/>
+
+  <g>
+    <rect class="accent" x="490" y="184" width="180" height="40" rx="8"/>
+    <text class="th accent-th" x="506" y="201">③ useradmin 密码</text>
+    <text class="ts accent-ts" x="506" y="217">光猫背后贴纸，每台不同</text>
+  </g>
+  <path class="leader" d="M490 204 L460 204"/>
+
+  <g>
+    <rect class="neutral" x="490" y="232" width="180" height="40" rx="8"/>
+    <text class="th" x="506" y="249">④ sudo 起 tftpd</text>
+    <text class="ts" x="506" y="265">另开终端保持运行</text>
+  </g>
+  <path class="leader" d="M490 252 L460 252"/>
+
+  <!-- 阶段一 → 阶段二 -->
+  <path class="arr" d="M250 272 L250 298" marker-end="url(#ah)"/>
+
+  <!-- 阶段二 -->
+  <rect class="bnd" x="40" y="302" width="420" height="92" rx="12"/>
+  <text class="ts" x="60" y="326">② :3333 阶段（全自动）</text>
+  <g>
+    <rect class="neutral" x="80" y="338" width="340" height="44" rx="8"/>
+    <text class="th" x="100" y="356">flash.py web-flash</text>
+    <text class="ts" x="100" y="373">刷引导重启 · 自动探测 192.168.0.1（20s）</text>
+  </g>
+
+  <path class="arr" d="M250 394 L250 410" marker-end="url(#ah)"/>
+
+  <!-- 阶段三 -->
+  <rect class="bnd" x="40" y="414" width="420" height="92" rx="12"/>
+  <text class="ts" x="60" y="438">③ U-Boot 阶段 · 192.168.0.1（全自动）</text>
+  <g>
+    <rect class="neutral" x="80" y="450" width="340" height="44" rx="8"/>
+    <text class="th" x="100" y="468">flash.py uboot-flash</text>
+    <text class="ts" x="100" y="485">bl2→重建UBI→bosa→u-boot→itb · 回车确认</text>
+  </g>
+
+  <path class="arr" d="M250 506 L250 522" marker-end="url(#ah)"/>
+
+  <!-- 终点 -->
+  <g>
+    <rect class="brand" x="150" y="526" width="200" height="44" rx="22"/>
+    <text class="th brand-th" x="250" y="553" text-anchor="middle">PonWrt @ 192.168.1.1</text>
+  </g>
+</svg>

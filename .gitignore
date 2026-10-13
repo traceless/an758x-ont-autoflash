@@ -1,0 +1,15 @@
+# ---- 敏感信息：绝不入库 ----
+# scripts/.env 含设备 SU_PASS / Web 密码，每台机器不同
+scripts/.env
+# 模板文件除外，需入库
+!scripts/.env.example
+# 分区备份（mtd6-bosa.bin 校准数据，每台唯一，且可能含运营商配置）
+backup/
+
+# ---- Python ----
+__pycache__/
+*.pyc
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db

@@ -1291,8 +1291,26 @@ def cmd_uboot_flash(args):
             print("无效选择，请重新输入。")
 
 
+def _prompt_model(default):
+    """交互选择机型，返回机型 key（如 MD/TF）。回车沿用默认。"""
+    keys = sorted(DEVICE_MODELS)
+    print("\n请选择机型：")
+    for i, k in enumerate(keys, 1):
+        mark = "（当前默认）" if k == default else ""
+        print(f"  {i}. {k}  {DEVICE_MODELS[k]['name']}{mark}")
+    try:
+        raw = input(f"请选择 [1-{len(keys)}]（回车默认 {default}）: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print(f"\n使用默认机型 {default}")
+        return default
+    if raw.isdigit() and 1 <= int(raw) <= len(keys):
+        return keys[int(raw) - 1]
+    print(f"无效输入，使用默认机型 {default}")
+    return default
+
+
 def cmd_menu(args):
-    """无子命令时进入的交互式主菜单：1-6 步任选、可重复执行。
+    """无子命令时进入的交互式主菜单：先选机型，再 1-6 步任选、可重复执行。
 
     4/5 步自动内联启动 HTTP 服务；第 5 步自动先 run-stock2ubi 再 web-flash。
     """
@@ -1333,12 +1351,19 @@ def cmd_menu(args):
     by_num = {n: fn for n, _, fn in items}
     done = set()
 
-    cur_name = DEVICE_MODELS[resolve_model(args)]['name']
     print("=" * 60)
-    print(f"  {cur_name} 免拆刷机助手")
+    print("         AN758x-免拆刷机助手")
     print("=" * 60)
+    # 先选机型，再进主菜单（CLI --model 指定则跳过交互选择）
+    model = resolve_model(args)
+    if not args.model:
+        model = _prompt_model(model)
+    a.model = model               # 菜单内所有步骤按所选机型执行
+    write_env("DEVICE_MODEL", model)  # 记住选择，下次运行默认使用
+    cur_name = DEVICE_MODELS[model]['name']
+    print(f"[OK] 当前机型: {model} {cur_name}（已记入 .env，下次默认使用）")
     while True:
-        print(f"\n{'='*60}\n 刷机主菜单\n{'='*60}")
+        print(f"\n{'='*60}\n 刷机主菜单（机型: {model} {cur_name}）\n{'='*60}")
         for num, name, _ in items:
             mark = "✓" if num in done else " "
             print(f"  {num}. [{mark}] {name}")

@@ -1,4 +1,4 @@
-<svg viewBox="0 0 720 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="XG-040G-MD 刷机流程">
+<svg viewBox="0 0 720 680" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="XG-040G-MD 刷机流程">
   <defs>
     <style>
       .bg { fill: #F7F7F8; }
@@ -32,89 +32,96 @@
     </marker>
   </defs>
 
-  <rect class="bg" x="0" y="0" width="720" height="620"/>
+  <rect class="bg" x="0" y="0" width="720" height="680"/>
+
+  <!-- 入口 -->
+  <g>
+    <rect class="neutral" x="130" y="24" width="240" height="44" rx="22"/>
+    <text class="th" x="250" y="42" text-anchor="middle">python3 scripts/flash.py</text>
+    <text class="ts" x="250" y="59" text-anchor="middle">主菜单 · 按 1→6 顺序执行</text>
+  </g>
+  <path class="arr" d="M250 68 L250 82" marker-end="url(#ah)"/>
 
   <!-- 阶段一 -->
-  <rect class="bnd" x="40" y="60" width="420" height="212" rx="12"/>
-  <text class="ts" x="60" y="84">① 原厂固件阶段（telnet + tftp）</text>
+  <rect class="bnd" x="40" y="88" width="420" height="270" rx="12"/>
+  <text class="ts" x="60" y="112">① 原厂固件阶段（telnet + HTTP:7123）</text>
 
   <g>
-    <rect class="neutral" x="80" y="96" width="340" height="44" rx="8"/>
-    <text class="th" x="100" y="114">flash.py fetch-supass</text>
-    <text class="ts" x="100" y="131">Web 登录提取 SuPassword → .env</text>
+    <rect class="neutral" x="80" y="124" width="340" height="44" rx="8"/>
+    <text class="th" x="100" y="142">1. 检查环境</text>
+    <text class="ts" x="100" y="159">依赖/固件自检 · 选择本机 HTTP IP</text>
   </g>
-  <path class="arr" d="M250 140 L250 150" marker-end="url(#ah)"/>
+  <path class="arr" d="M250 168 L250 178" marker-end="url(#ah)"/>
   <g>
-    <rect class="neutral" x="80" y="154" width="340" height="44" rx="8"/>
-    <text class="th" x="100" y="172">flash.py backup</text>
-    <text class="ts" x="100" y="189">telnet user→su→root，仅 mtd6 或全量 → backup/</text>
+    <rect class="neutral" x="80" y="182" width="340" height="44" rx="8"/>
+    <text class="th" x="100" y="200">2. 开启 telnet</text>
+    <text class="ts" x="100" y="217">Web 登录自动开启（CMCCAdmin）</text>
   </g>
-  <path class="arr" d="M250 198 L250 208" marker-end="url(#ah)"/>
+  <path class="arr" d="M250 226 L250 236" marker-end="url(#ah)"/>
   <g>
-    <rect class="neutral" x="80" y="212" width="340" height="44" rx="8"/>
-    <text class="th" x="100" y="230">flash.py run-stock2ubi</text>
-    <text class="ts" x="100" y="247">curl 下载执行，起 :3333</text>
+    <rect class="neutral" x="80" y="240" width="340" height="44" rx="8"/>
+    <text class="th" x="100" y="258">3. 查询 SuPassword</text>
+    <text class="ts" x="100" y="275">下载日志包自动提取 → .env</text>
+  </g>
+  <path class="arr" d="M250 284 L250 294" marker-end="url(#ah)"/>
+  <g>
+    <rect class="neutral" x="80" y="298" width="340" height="44" rx="8"/>
+    <text class="th" x="100" y="316">4. 备份 mtd 分区</text>
+    <text class="ts" x="100" y="333">仅 mtd6-bosa（推荐）或全量 → backup/</text>
   </g>
 
   <!-- 右侧手动操作 -->
-  <text class="th" x="590" y="76" text-anchor="middle">你只需动手 4 次</text>
+  <text class="th" x="580" y="112" text-anchor="middle">你只需动手 3 次</text>
 
   <g>
-    <rect class="neutral" x="490" y="88" width="180" height="40" rx="8"/>
-    <text class="th" x="506" y="105">① 网卡设多 IP</text>
-    <text class="ts" x="506" y="121">net-help 查命令</text>
+    <rect class="neutral" x="490" y="124" width="180" height="40" rx="8"/>
+    <text class="th" x="506" y="141">① 网卡设多 IP</text>
+    <text class="ts" x="506" y="157">net-help 查命令</text>
   </g>
-  <path class="leader" d="M490 108 L460 108"/>
+  <path class="leader" d="M490 144 L460 144"/>
 
   <g>
-    <rect class="brand" x="490" y="136" width="180" height="40" rx="8"/>
-    <text class="th brand-th" x="506" y="153">② 超管密码</text>
-    <text class="ts brand-th" x="506" y="169">aDm8H%MdA 固定，回车即可</text>
+    <rect class="brand" x="490" y="172" width="180" height="40" rx="8"/>
+    <text class="th brand-th" x="506" y="189">② Web 超管密码</text>
+    <text class="ts brand-th" x="506" y="205">aDm8H%MdA 固定，回车即可</text>
   </g>
-  <path class="leader" d="M490 156 L460 156"/>
+  <path class="leader" d="M490 192 L460 192"/>
 
   <g>
-    <rect class="accent" x="490" y="184" width="180" height="40" rx="8"/>
-    <text class="th accent-th" x="506" y="201">③ useradmin 密码</text>
-    <text class="ts accent-ts" x="506" y="217">光猫背后贴纸，每台不同</text>
+    <rect class="accent" x="490" y="220" width="180" height="40" rx="8"/>
+    <text class="th accent-th" x="506" y="237">③ telnet 贴纸密码</text>
+    <text class="ts accent-ts" x="506" y="253">useradmin · 会话只输一次</text>
   </g>
-  <path class="leader" d="M490 204 L460 204"/>
-
-  <g>
-    <rect class="neutral" x="490" y="232" width="180" height="40" rx="8"/>
-    <text class="th" x="506" y="249">④ sudo 起 tftpd</text>
-    <text class="ts" x="506" y="265">另开终端保持运行</text>
-  </g>
-  <path class="leader" d="M490 252 L460 252"/>
+  <path class="leader" d="M490 240 L460 240"/>
 
   <!-- 阶段一 → 阶段二 -->
-  <path class="arr" d="M250 272 L250 298" marker-end="url(#ah)"/>
+  <path class="arr" d="M250 358 L250 372" marker-end="url(#ah)"/>
 
   <!-- 阶段二 -->
-  <rect class="bnd" x="40" y="302" width="420" height="92" rx="12"/>
-  <text class="ts" x="60" y="326">② :3333 阶段（全自动）</text>
+  <rect class="bnd" x="40" y="378" width="420" height="92" rx="12"/>
+  <text class="ts" x="60" y="402">② 刷引导（全自动）</text>
   <g>
-    <rect class="neutral" x="80" y="338" width="340" height="44" rx="8"/>
-    <text class="th" x="100" y="356">flash.py web-flash</text>
-    <text class="ts" x="100" y="373">刷引导重启 · 自动探测 192.168.0.1（20s）</text>
+    <rect class="neutral" x="80" y="414" width="340" height="44" rx="8"/>
+    <text class="th" x="100" y="432">5. 刷引导</text>
+    <text class="ts" x="100" y="449">run-stock2ubi 起 :3333 → 刷 bl2+fip → 重启探测 192.168.0.1</text>
   </g>
 
-  <path class="arr" d="M250 394 L250 410" marker-end="url(#ah)"/>
+  <path class="arr" d="M250 470 L250 484" marker-end="url(#ah)"/>
 
   <!-- 阶段三 -->
-  <rect class="bnd" x="40" y="414" width="420" height="92" rx="12"/>
-  <text class="ts" x="60" y="438">③ U-Boot 阶段 · 192.168.0.1（全自动）</text>
+  <rect class="bnd" x="40" y="490" width="420" height="92" rx="12"/>
+  <text class="ts" x="60" y="514">③ U-Boot 阶段 · 192.168.0.1（子菜单可重复）</text>
   <g>
-    <rect class="neutral" x="80" y="450" width="340" height="44" rx="8"/>
-    <text class="th" x="100" y="468">flash.py uboot-flash</text>
-    <text class="ts" x="100" y="485">bl2→重建UBI→bosa→u-boot→itb · 回车确认</text>
+    <rect class="neutral" x="80" y="526" width="340" height="44" rx="8"/>
+    <text class="th" x="100" y="544">6. U-Boot 恢复页刷机</text>
+    <text class="ts" x="100" y="561">bl2→重建UBI→bosa→u-boot→itb · 失败原地重试</text>
   </g>
 
-  <path class="arr" d="M250 506 L250 522" marker-end="url(#ah)"/>
+  <path class="arr" d="M250 582 L250 596" marker-end="url(#ah)"/>
 
   <!-- 终点 -->
   <g>
-    <rect class="brand" x="150" y="526" width="200" height="44" rx="22"/>
-    <text class="th brand-th" x="250" y="553" text-anchor="middle">PonWrt @ 192.168.1.1</text>
+    <rect class="brand" x="150" y="600" width="200" height="44" rx="22"/>
+    <text class="th brand-th" x="250" y="627" text-anchor="middle">PonWrt @ 192.168.1.1</text>
   </g>
 </svg>

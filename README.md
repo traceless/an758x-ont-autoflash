@@ -96,7 +96,7 @@ an758x-ont-autoflash/
 │   ├── http_server.py      # HTTP 文件服务（GET 下载 + PUT 上传）
 │   ├── tftp_server.py      # TFTP 服务（RFC1350+2347，备用）
 │   └── .env.example        # 配置键说明（.env 运行时自动生成，已 gitignore）
-├── md-uboot/               # MD 机型固件（preloader / fip / sysupgrade.itb）
+├── uboot-md/               # MD 机型固件（preloader / fip / sysupgrade.itb）
 ├── tools/
 │   └── an758x-stock2ubi    # 免拆包（设备端运行，起 :3333 服务）
 ├── backup/                 # 分区备份输出（已 gitignore，每台设备唯一）

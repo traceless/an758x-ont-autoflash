@@ -43,12 +43,12 @@ DEFAULT_HTTP_PORT = 7123
 
 # 机型 → 刷机 profile。当前仅支持 MD（诺基亚 XG-040G-MD），TF 机型兼容下一期实现。
 # Web 账号不写死在代码：从 .env 的 {MODEL}_WEB_USER / {MODEL}_WEB_PASS 读取。
-# 固件放 {MODEL 对应目录}（如 md-uboot/），文件名含 preloader/fip 关键字即可被识别。
+# 固件放 {MODEL 对应目录}（如 uboot-md/），文件名含 preloader/fip 关键字即可被识别。
 DEFAULT_MODEL = "MD"
 DEVICE_MODELS = {
     "MD": {
         "name": "诺基亚 XG-040G-MD（移动）",
-        "uboot_dir": "md-uboot",   # preloader/fip/sysupgrade.itb 所在目录
+        "uboot_dir": "uboot-md",   # preloader/fip/sysupgrade.itb 所在目录
         "default_user": "CMCCAdmin",  # 出厂 Web 超管账号（仅作交互输入的回车默认值）
         "default_pass": "aDm8H%MdA",  # 仅作首次交互输入的提示默认值
     },
@@ -306,7 +306,7 @@ def resolve_model(args=None):
 
 
 def model_uboot_dir(model=None):
-    """机型固件目录（如 md-uboot/），来自 DEVICE_MODELS profile。"""
+    """机型固件目录（如 uboot-md/），来自 DEVICE_MODELS profile。"""
     prof = DEVICE_MODELS.get(model or DEFAULT_MODEL, {})
     return os.path.join(
         PROJECT_DIR, prof.get("uboot_dir", (model or DEFAULT_MODEL).lower() + "-uboot"))

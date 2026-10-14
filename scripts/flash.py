@@ -41,18 +41,10 @@ DEFAULT_UBOOT_TIMEOUT = 20
 DEFAULT_HTTP_IP = "192.168.1.254"
 DEFAULT_HTTP_PORT = 7123
 
-# 机型 → 刷机 profile。当前仅支持 MD（诺基亚 XG-040G-MD），TF 机型兼容下一期实现。
+# 机型 profile 统一在 lib/models.py 声明（凭据默认值、固件目录、端口、各步骤方式）。
 # Web 账号不写死在代码：从 .env 的 {MODEL}_WEB_USER / {MODEL}_WEB_PASS 读取。
-# 固件放 {MODEL 对应目录}（如 uboot-md/），文件名含 preloader/fip 关键字即可被识别。
-DEFAULT_MODEL = "MD"
-DEVICE_MODELS = {
-    "MD": {
-        "name": "诺基亚 XG-040G-MD（移动）",
-        "uboot_dir": "uboot-md",   # preloader/fip/sysupgrade.itb 所在目录
-        "default_user": "CMCCAdmin",  # 出厂 Web 超管账号（仅作交互输入的回车默认值）
-        "default_pass": "aDm8H%MdA",  # 仅作首次交互输入的提示默认值
-    },
-}
+# 固件放机型对应目录（如 uboot-md/），文件名含 preloader/fip/.itb 关键字即可被识别。
+from lib.models import DEFAULT_MODEL, DEVICE_MODELS, get_profile  # noqa: E402
 
 # 项目目录
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -60,7 +52,8 @@ BACKUP_DIR = os.path.join(PROJECT_DIR, "backup")
 TOOLS_DIR = os.path.join(PROJECT_DIR, "tools")
 ENV_FILE = os.path.join(SCRIPT_DIR, ".env")
 
-# mtd 分区表（index, 备份文件名）
+# mtd 分区表（index, 备份文件名）—— 仅作 /proc/mtd 读取失败时的 MD 兜底。
+# TF 分区名不同（mtd11~16）且多 mtd17/18，实际以设备 /proc/mtd 动态解析为准。
 MTD_PARTITIONS = [
     (0, "mtd0-bootloader.bin"),
     (1, "mtd1-romfile.bin"),
@@ -280,17 +273,24 @@ def get_credentials(args):
     telnet 用户名和密码：命令行参数 > 当前会话已验证的缓存 > 交互输入；
     缓存仅在登录成功后写入，输错会重新询问。
     su 超密从 .env 复用（fetch-supass 提取）。
+    TF 机型（telnet_login=root）无贴纸账号：直接以 root + 超密登录。
     """
+    model = resolve_model(args)
+    prof = get_profile(model)
+    su_pass = normalize_su_pass(
+        getattr(args, "su_pass", None) or read_env("SU_PASS")
+        or ask("SU 超级密码（fetch-supass 提取）", secret=True))
+    write_env("SU_PASS", su_pass)  # 回写清洗后的值，旧的 val= 脏值自愈
+
+    if prof.get("telnet_login") == "root":
+        return "root", su_pass, su_pass  # TF：root + 超密直登
+
     user = (getattr(args, "user", None)
             or _SESSION_TELNET.get("user")
             or ask("telnet 用户名（光猫背后贴纸，user 或 useradmin）"))
     user_pass = (getattr(args, "user_pass", None)
                  or _SESSION_TELNET.get("user_pass")
                  or ask("telnet 密码（光猫背后'默认终端配置密码'）", secret=True))
-    su_pass = normalize_su_pass(
-        getattr(args, "su_pass", None) or read_env("SU_PASS")
-        or ask("SU 超级密码（fetch-supass 提取）", secret=True))
-    write_env("SU_PASS", su_pass)  # 回写清洗后的值，旧的 val= 脏值自愈
     return user, user_pass, su_pass
 
 
@@ -494,68 +494,86 @@ def cmd_net_help(args):
 
 
 def cmd_enable_telnet(args):
-    from lib.web_login import web_login, enable_telnet, web_logout
+    from lib.web_login import web_login, web_logout
+    from lib.telnet_open import open_telnet
     write_env("ROUTER_IP", args.router)
 
     model, user, password = get_web_credentials(args)
+    prof = get_profile(model)
+    port = int(prof.get("web_port", 80))
 
-    print(f"\n[web] 登录 http://{args.router}/ （{DEVICE_MODELS[model]['name']} / {user}）...")
+    print(f"\n[web] 登录 http://{args.router}:{port}/ （{prof['name']} / {user}）...")
     try:
-        opener, cj = web_login(args.router, user, password)
+        opener, cj = web_login(args.router, user, password, port=port)
     except Exception as e:
         print(f"[FAIL] Web 登录失败：{e}")
         print("  本次输入的密码未被保存，重跑会重新询问。")
-        print("  若 .env 里存的是旧密码导致反复失败：删除 MD_WEB_PASS 行，"
+        print(f"  若 .env 里存的是旧密码导致反复失败：删除 {model}_WEB_PASS 行，"
               "或用 --web-pass 覆盖。")
-        print("  检查：账号密码是否正确；光猫是否恢复出厂（长按 reset 12 秒）")
+        print("  检查：账号密码是否正确；光猫是否恢复出厂"
+              "（MD 长按 reset 12 秒；TF 拔光纤+长按 reset 到指示灯闪烁）")
         return 1
     save_web_credentials(model, user, password)  # 登录成功才持久化
 
     print("[web] 登录成功，正在开启 telnet 服务...")
-    ok, msg = enable_telnet(args.router, opener, cj)
-    web_logout(args.router, opener)
+    ok, msg = open_telnet(prof, args.router, opener=opener)
+    web_logout(args.router, opener, port=port)
     if ok:
         print(f"[OK] {msg}")
         return 0
-    else:
-        print(f"[FAIL] {msg}")
-        print(f"  请手动访问 http://{args.router}/system.cgi?telnet 点击'打开'")
-        return 1
+    print(f"[FAIL] {msg}")
+    mgmt = prof.get("mgmt_port", port)
+    print(f"  请手动访问 http://{args.router}:{mgmt}/system.cgi?telnet 点击'打开'")
+    return 1
 
 
 def cmd_fetch_supass(args):
-    from lib.web_login import web_login, enable_telnet, web_logout
-    from lib.supass import fetch_supass_via_web
+    from lib.web_login import web_login, web_logout
+    from lib.supass import fetch_supass_via_web, fetch_supass_via_dumpdatamodel
     write_env("ROUTER_IP", args.router)
 
     # 凭据（按机型）
     model, web_user, web_pass = get_web_credentials(args)
+    prof = get_profile(model)
+    port = int(prof.get("web_port", 80))
+    mode = prof.get("supass_mode", "log_plaintext")
 
     # 1. Web 登录
-    print(f"\n[web] 登录 http://{args.router}/ "
-          f"（{DEVICE_MODELS[model]['name']} / {web_user}）...")
+    print(f"\n[web] 登录 http://{args.router}:{port}/ "
+          f"（{prof['name']} / {web_user}）...")
     try:
-        opener, cj = web_login(args.router, web_user, web_pass)
+        opener, cj = web_login(args.router, web_user, web_pass, port=port)
         print("[web] 登录成功")
     except Exception as e:
         print(f"[FAIL] Web 登录失败：{e}")
         print("  本次输入的密码未被保存，重跑会重新询问。")
-        print("  若 .env 里存的是旧密码导致反复失败：删除 MD_WEB_PASS 行，"
+        print(f"  若 .env 里存的是旧密码导致反复失败：删除 {model}_WEB_PASS 行，"
               "或用 --web-pass 覆盖。")
-        print("  检查：账号密码是否正确；光猫是否恢复出厂（长按 reset 12 秒）")
+        print("  检查：账号密码是否正确；光猫是否恢复出厂"
+              "（MD 长按 reset 12 秒；TF 拔光纤+长按 reset 到指示灯闪烁）")
         return 1
     save_web_credentials(model, web_user, web_pass)  # 登录成功才持久化
 
-    # 2. 下载日志包 → 本地解压 → grep SuPassword
-    print("\n[web] 下载日志包并提取 SuPassword...")
-    found = fetch_supass_via_web(opener, args.router, verbose=True)
+    # 2. 按机型取 SuPassword
+    if mode == "dumpdatamodel_aes":
+        print("\n[web] 从 dumpdatamodel.cgi 抓取 SuPassword 密文并 AES 解密...")
+        found = fetch_supass_via_dumpdatamodel(opener, args.router, prof, verbose=True)
+    else:
+        print("\n[web] 下载日志包并提取 SuPassword...")
+        found = fetch_supass_via_web(opener, args.router, verbose=True)
 
     # 退出 Web 会话，避免遗留
-    web_logout(args.router, opener)
+    web_logout(args.router, opener, port=port)
 
     if not found:
-        print("\n[FAIL] 日志中没找到 SuPassword。")
-        print("  可浏览器登录 Web → /upgrade.cgi 手动下载日志，搜 SuPassword / supass")
+        if mode == "dumpdatamodel_aes":
+            mgmt = prof.get("mgmt_port", port)
+            print("\n[FAIL] 未从 dumpdatamodel 解出 SuPassword。")
+            print(f"  可浏览器登录后访问 http://{args.router}:{mgmt}/dumpdatamodel.cgi，"
+                  "搜 SuPassword 的 v= 值核对")
+        else:
+            print("\n[FAIL] 日志中没找到 SuPassword。")
+            print("  可浏览器登录 Web → /upgrade.cgi 手动下载日志，搜 SuPassword / supass")
         return 1
 
     # 再统一清洗一次（telnet 兜底通道返回的是原始文本，可能带 val=）
@@ -573,14 +591,13 @@ def cmd_fetch_supass(args):
 
 def cmd_login(args):
     from lib.telnet_session import TelnetSession
+    prof = get_profile(resolve_model(args))
     user, user_pass, su_pass = get_credentials(args)
     sess = TelnetSession(args.router, timeout=20)
     try:
-        sess.connect()
-        sess.login_user(user, user_pass)
-        sess.su(su_pass)
+        sess.connect_login(prof.get("telnet_login", "user_su"), user, user_pass, su_pass)
         remember_telnet(user, user_pass)  # 验证通过才缓存
-        print("\n[OK] 登录成功，已进入 root (#)")
+        print("\n[OK] 登录成功，已进入 root")
         out = sess.run("uname -a; echo '---'; cat /proc/mtd", timeout=20)
         print("\n=== 设备信息 ===")
         print(out.decode("utf-8", "ignore"))
@@ -778,27 +795,31 @@ def wait_uboot_recovery(host=DEFAULT_UBOOT_HOST, seconds=DEFAULT_UBOOT_TIMEOUT):
     return False
 
 
-# 仅备份光模块校准（mtd6）：刷机唯一不可再生的数据，体积小、最关键
-BOSA_ONLY = [(6, "mtd6-bosa.bin")]
+def _chunk_partitions(partitions, size=7):
+    """把分区列表切成若干批（单条命令过长可能超出 shell 限制）。"""
+    return [partitions[i:i + size] for i in range(0, len(partitions), size)]
+
+
+def _batch_label(n, items):
+    if len(items) == 1:
+        return "仅 " + items[0][1]
+    return f"第{n}批 mtd{items[0][0]}~mtd{items[-1][0]}（{len(items)} 个）"
 
 
 def _build_backup_cmds_http(http_ip, http_port, partitions):
     """构造 dd|curl PUT 命令（用 HTTP 替代 TFTP）。文件落到 backup/。
 
-    partitions 为要备份的 [(mtd_index, 文件名), ...]。
-    全量时分两批（mtd0~13、mtd14~16），单条命令过长可能超出 shell 限制。
+    partitions 为要备份的 [(mtd_index, 文件名), ...]，动态分批。
     """
     def chain(items):
         return " && ".join(
-            f"dd if=/dev/mtd{i} | curl -fsS -T - http://{http_ip}:{http_port}/backup/{name}"
+            f"dd if=/dev/mtd{i} | curl -fsS --connect-timeout 5 -T - http://{http_ip}:{http_port}/backup/{name}"
             for i, name in items
         )
-    if partitions is BOSA_ONLY or len(partitions) <= 1:
-        return [("仅 mtd6-bosa（光模块校准）", chain(partitions))]
-    return [
-        ("第一批 mtd0~mtd13", chain(partitions[:14])),
-        ("第二批 mtd14~mtd16", chain(partitions[14:])),
-    ]
+    if len(partitions) <= 1:
+        return [(_batch_label(1, partitions), chain(partitions))]
+    return [(_batch_label(n, batch), chain(batch))
+            for n, batch in enumerate(_chunk_partitions(partitions), 1)]
 
 
 def _build_backup_cmds(tftp_ip, partitions):
@@ -808,60 +829,110 @@ def _build_backup_cmds(tftp_ip, partitions):
             f"dd if=/dev/mtd{i} | tftp -p -l - -r backup/{name} {tftp_ip}"
             for i, name in items
         )
-    if partitions is BOSA_ONLY or len(partitions) <= 1:
-        return [("仅 mtd6-bosa（光模块校准）", chain(partitions))]
-    return [
-        ("第一批 mtd0~mtd13", chain(partitions[:14])),
-        ("第二批 mtd14~mtd16", chain(partitions[14:])),
-    ]
+    if len(partitions) <= 1:
+        return [(_batch_label(1, partitions), chain(partitions))]
+    return [(_batch_label(n, batch), chain(batch))
+            for n, batch in enumerate(_chunk_partitions(partitions), 1)]
+
+
+def read_mtd_table(sess, retries=1):
+    """在已登录的 telnet 会话上读 /proc/mtd，返回 [(index, name)]（按 index 升序）。
+
+    读取为空时重试一次（run 每次会先做 shell 握手，竞态已由握手兜底）。
+    """
+    for attempt in range(retries + 1):
+        out = sess.run("cat /proc/mtd", timeout=15)
+        table = []
+        for m in re.finditer(r'mtd(\d+):\s+[0-9a-fA-F]+\s+[0-9a-fA-F]+\s+"([^"]+)"',
+                             out.decode("utf-8", "ignore")):
+            table.append((int(m.group(1)), m.group(2).strip()))
+        table.sort()
+        if table:
+            return table
+        print(f"[WARN] /proc/mtd 读取为空（第 {attempt + 1} 次），重试...")
+    return []
+
+
+def build_backup_partitions(mtd_table, mode):
+    """按备份范围生成 [(mtd_index, 文件名), ...]。
+
+    bosa 模式备份两块关键数据：bosa（光模块校准）+ ri（射频/区域信息，
+    同样不可再生）。按名称从 /proc/mtd 定位，缺失时回退惯例 mtd6/mtd7。
+    """
+    if mode == "bosa":
+        parts = []
+        for want, fallback in (("bosa", 6), ("ri", 7)):
+            hit = [(i, n) for i, n in mtd_table if n == want]
+            if hit:
+                i, n = hit[0]
+            else:
+                i, n = fallback, want
+            parts.append((i, f"mtd{i}-{n}.bin"))
+        return parts
+    return [(i, f"mtd{i}-{name}.bin") for i, name in mtd_table]
 
 
 def _choose_backup_mode(args):
     """决定备份范围：CLI --mode 优先；否则交互二选一（默认仅 bosa）。
 
-    返回 (partitions, mode 字符串)。
+    返回 (mode 字符串, label)。具体分区在登录后按 /proc/mtd 动态解析。
     """
     mode = getattr(args, "backup_mode", None)
     if mode not in ("bosa", "full"):
         print("\n=== 备份范围 ===")
-        print("  1. 仅备份 mtd6-bosa.bin（光模块校准，256KB，刷机唯一不可再生，推荐）")
-        print("  2. 全量备份 mtd0~mtd16（含 bootloader/kernel/rootfs 等，体积大、耗时久）")
+        print("  1. 仅备份关键分区（bosa 校准 + ri，体积小，推荐）")
+        print("  2. 全量备份所有分区（按设备 /proc/mtd 实际表，体积大、耗时久）")
         try:
             raw = input("请选择 [1/2]（回车默认 1）: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n默认选 1（仅 bosa）")
+            print("\n默认选 1（bosa + ri）")
             raw = ""
         mode = "full" if raw == "2" else "bosa"
-    partitions = MTD_PARTITIONS if mode == "full" else BOSA_ONLY
-    label = "全量 mtd0~mtd16" if mode == "full" else "仅 mtd6-bosa.bin"
-    return partitions, mode, label
+    label = "仅关键分区（bosa + ri）" if mode == "bosa" else "全量（按 /proc/mtd）"
+    return mode, label
 
 
 def cmd_backup(args):
     from lib.telnet_session import TelnetSession
     # 先选备份范围（仅 bosa / 全量），再要凭据
-    partitions, mode, scope_label = _choose_backup_mode(args)
+    mode, scope_label = _choose_backup_mode(args)
     args.http_ip = resolve_http_ip(args)
+    login_mode = get_profile(resolve_model(args)).get("telnet_login", "user_su")
     user, user_pass, su_pass = get_credentials(args)
     os.makedirs(BACKUP_DIR, exist_ok=True)
     # 内联启动 HTTP 服务（后台线程），无需另开终端
     ensure_httpd(args.http_port, host=args.http_ip)
-    # 同名旧备份先归档，避免覆盖（mtd6-bosa.bin 校准数据丢了无法找回）
-    for _, name in partitions:
-        rotated = rotate_existing(os.path.join(BACKUP_DIR, name))
-        if rotated:
-            print(f"  (旧备份归档 -> {rotated})")
-    print(f"备份范围: {scope_label}（共 {len(partitions)} 个分区）")
-    print(f"备份文件将落到: {BACKUP_DIR}")
-    print(f"光猫访问本机的 HTTP IP: {args.http_ip}:{args.http_port}（可在检查环境里改选）")
     sess = TelnetSession(args.router, timeout=20)
     try:
-        sess.connect_login_user(user, user_pass, su_pass)
+        sess.connect_login(login_mode, user, user_pass, su_pass)
     except Exception:
         forget_telnet()  # 登录失败，清缓存让下次重新询问
         raise
     remember_telnet(user, user_pass)  # 验证通过才缓存
     try:
+        # 登录后按 /proc/mtd 动态解析分区（TF 与 MD 分区名/数量不同，勿用硬编码表）
+        mtd_table = read_mtd_table(sess)
+        if not mtd_table:
+            # 硬编码 MD 表在 TF 上文件名全错（mtd11~16 名称不同且少 2 个分区），
+            # 宁可中止也不能备错名
+            print("[FAIL] /proc/mtd 读取失败（重试后仍为空），为避免备错分区名已中止。"
+                  "请重跑本步；若反复失败请先执行 login 排查会话状态")
+            return 1
+        partitions = build_backup_partitions(mtd_table, mode)
+        if mode == "bosa":
+            print("[OK] 关键分区定位: "
+                  + ", ".join(f'mtd{i} "{n}"' for i, n in partitions))
+        else:
+            print(f"[OK] 设备共 {len(partitions)} 个分区: "
+                  + ", ".join(f"mtd{i}={n}" for i, n in mtd_table))
+        # 同名旧备份先归档，避免覆盖（mtd6-bosa.bin 校准数据丢了无法找回）
+        for _, name in partitions:
+            rotated = rotate_existing(os.path.join(BACKUP_DIR, name))
+            if rotated:
+                print(f"  (旧备份归档 -> {rotated})")
+        print(f"备份范围: {scope_label}（共 {len(partitions)} 个分区）")
+        print(f"备份文件将落到: {BACKUP_DIR}")
+        print(f"光猫访问本机的 HTTP IP: {args.http_ip}:{args.http_port}（可在检查环境里改选）")
         for label, cmd in _build_backup_cmds_http(
                 args.http_ip, args.http_port, partitions):
             print(f"\n=== {label} ===")
@@ -869,7 +940,7 @@ def cmd_backup(args):
             out = sess.run(cmd, timeout=900)
             print(out.decode("utf-8", "ignore"))
         print(f"\n[OK] 备份完成（{scope_label}）。文件在 {BACKUP_DIR}")
-        print("  务必把 mtd6-bosa.bin（校准）单独多存几处！")
+        print("  务必把 bosa（校准）和 ri 这两个文件单独多存几处！")
     finally:
         sess.close()
     return 0
@@ -890,10 +961,11 @@ def cmd_run_stock2ubi(args):
     # 内联 HTTP 服务，供光猫 curl 下载
     ensure_httpd(args.http_port, host=args.http_ip)
     expect_size = os.path.getsize(tool)
+    login_mode = get_profile(resolve_model(args)).get("telnet_login", "user_su")
     user, user_pass, su_pass = get_credentials(args)
     sess = TelnetSession(args.router, timeout=20)
     try:
-        sess.connect_login_user(user, user_pass, su_pass)
+        sess.connect_login(login_mode, user, user_pass, su_pass)
     except Exception:
         forget_telnet()  # 登录失败，清缓存让下次重新询问
         raise
@@ -1216,7 +1288,7 @@ def cmd_menu(args):
         (1, "检查环境", lambda: cmd_check(a)),
         (2, "开启 telnet（Web 登录自动开）", lambda: cmd_enable_telnet(a)),
         (3, "查询 SuPassword 超密", lambda: cmd_fetch_supass(a)),
-        (4, "备份 mtd 分区（可选仅 mtd6-bosa 或全量，dd|curl）", lambda: cmd_backup(a)),
+        (4, "备份 mtd 分区（可选 bosa校准+ri 或全量，dd|curl）", lambda: cmd_backup(a)),
         (5, "刷引导（自动 run-stock2ubi → web-flash）", step_web_flash),
         (6, "U-Boot 恢复页刷机（192.168.0.1，5 步菜单）",
          lambda: cmd_uboot_flash(a)),
@@ -1224,8 +1296,9 @@ def cmd_menu(args):
     by_num = {n: fn for n, _, fn in items}
     done = set()
 
+    cur_name = DEVICE_MODELS[resolve_model(args)]['name']
     print("=" * 60)
-    print("  XG-040G-MD 光猫免拆刷机助手")
+    print(f"  {cur_name} 免拆刷机助手")
     print("=" * 60)
     while True:
         print(f"\n{'='*60}\n 刷机主菜单\n{'='*60}")
@@ -1269,7 +1342,7 @@ def cmd_menu(args):
 
 def main():
     p = argparse.ArgumentParser(
-        description="XG-040G-MD 光猫免拆刷机助手（跨平台，纯标准库）",
+        description="AN758x 光猫免拆刷机助手（XG-040G-MD / XG-040G-TF，跨平台，纯标准库）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="流程详见文件顶部注释。先 doctor，再 fetch-supass，依次往下。",
     )
@@ -1290,12 +1363,12 @@ def main():
     sub.add_parser("check", help="环境自检").set_defaults(func=cmd_check)
     sub.add_parser("net-help", help="三平台设多 IP 命令清单").set_defaults(func=cmd_net_help)
     pe = sub.add_parser("enable-telnet", help="Web 登录光猫自动开启 telnet 服务")
-    pe.add_argument("--web-user", default=None, help="Web 用户名（默认按机型 CMCCAdmin）")
+    pe.add_argument("--web-user", default=None, help="Web 用户名（默认按机型，回车用机型默认）")
     pe.add_argument("--web-pass", default=None, help="Web 密码（默认按机型提示，见 --model）")
     pe.set_defaults(func=cmd_enable_telnet)
-    pf = sub.add_parser("fetch-supass", help="telnet 登录光猫 grep 日志提取 SuPassword")
-    pf.add_argument("--user", default=None, help="telnet 用户名（默认 CMCCAdmin）")
-    pf.add_argument("--password", default=None, help="telnet 密码（默认提示输入 aDm8H%MdA）")
+    pf = sub.add_parser("fetch-supass", help="Web 登录光猫提取 SuPassword（MD 日志明文 / TF dumpdatamodel+AES）")
+    pf.add_argument("--user", default=None, help="telnet 用户名（TF 机型无需）")
+    pf.add_argument("--password", default=None, help="telnet 密码（TF 机型无需）")
     pf.set_defaults(func=cmd_fetch_supass)
 
     pl = sub.add_parser("login", help="测试 telnet 登录到 root #")
@@ -1315,7 +1388,7 @@ def main():
 
     pb = sub.add_parser("backup", help="【原厂】dd|curl -T 备份 mtd（可选仅 bosa 或全量）到 backup/")
     pb.add_argument("--mode", dest="backup_mode", choices=["bosa", "full"],
-                    default=None, help="备份范围：bosa=仅 mtd6 校准（默认交互选择）；full=全量 mtd0~16")
+                    default=None, help="备份范围：bosa=仅关键分区 bosa校准+ri（默认交互选择）；full=按 /proc/mtd 全量")
     pb.add_argument("--user", default=None)
     pb.add_argument("--user-pass", default=None)
     pb.add_argument("--su-pass", default=None)

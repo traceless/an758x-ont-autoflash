@@ -15,13 +15,16 @@ import re
 import time
 
 
-def _open(router_ip, timeout=10):
-    """构建带 Cookie 的 opener，返回 (opener, cookiejar)。"""
+def _open(router_ip, timeout=10, port=80):
+    """构建带 Cookie 的 opener，返回 (opener, cookiejar, timeout)。
+
+    port 为 Web 登录端口（MD/TF 通常都是 80）；Cookie 按主机名作用，跨端口仍有效。
+    """
     cj = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
     opener.addheaders = [
         ("X-Requested-With", "XMLHttpRequest"),
-        ("Referer", f"http://{router_ip}/"),
+        ("Referer", f"http://{router_ip}:{port}/"),
     ]
     return opener, cj, timeout
 
@@ -39,14 +42,14 @@ def _check_err_cookie(cj):
     return None
 
 
-def _try_login(opener, cj, router_ip, username, password, timeout):
+def _try_login(opener, cj, router_ip, username, password, timeout, port=80):
     """单次登录尝试，返回 (code, body, has_sid)。"""
     data = urllib.parse.urlencode({
         "name": username,
         "pswd": password,
     }).encode()
     req = urllib.request.Request(
-        f"http://{router_ip}/login.cgi", data=data, method="POST"
+        f"http://{router_ip}:{port}/login.cgi", data=data, method="POST"
     )
     req.add_header("X-Requested-With", "XMLHttpRequest")
     try:
@@ -68,7 +71,7 @@ def _try_login(opener, cj, router_ip, username, password, timeout):
     return code, body, has_sid
 
 
-def web_logout(router_ip, opener, timeout=10):
+def web_logout(router_ip, opener, timeout=10, port=80):
     """退出登录，注销服务端 session。
 
     接口：GET /login.cgi?out（带当前 opener 的 cookie session）。
@@ -90,7 +93,7 @@ def web_logout(router_ip, opener, timeout=10):
                 "curl", "-s", "-o", "/dev/null",
                 "-H", f"Cookie: {cookie_str}",
                 "--max-time", str(timeout),
-                f"http://{router_ip}/login.cgi?out",
+                f"http://{router_ip}:{port}/login.cgi?out",
             ],
             capture_output=True, text=True, timeout=timeout + 5
         )
@@ -101,29 +104,31 @@ def web_logout(router_ip, opener, timeout=10):
         return False
 
 
-def web_login(router_ip, username, password, timeout=10, retries=3, retry_delay=10):
+def web_login(router_ip, username, password, timeout=10, retries=3, retry_delay=10, port=80):
     """Web 登录光猫，返回 (opener, cookiejar) 或抛异常。
 
     自动检测登录锁定（err cookie），提示等待时间。
+    port 为 Web 登录端口（默认 80）。
     注意：用完后请调用 web_logout 退出，避免遗留会话。
     """
-    opener, cj, t = _open(router_ip, timeout)
+    base = f"http://{router_ip}:{port}"
+    opener, cj, t = _open(router_ip, timeout, port)
 
     # 先 GET 首页，拿 lang cookie 初始化
     try:
-        opener.open(f"http://{router_ip}/", timeout=t).read()
+        opener.open(base + "/", timeout=t).read()
     except Exception:
         pass
 
     for attempt in range(1, retries + 1):
         code, body, has_sid = _try_login(
-            opener, cj, router_ip, username, password, t
+            opener, cj, router_ip, username, password, t, port
         )
 
         if has_sid or code == 299:
             # 登录成功后访问首页，获取 -goahead-session- 和 logintoken 等 cookie
             try:
-                opener.open(f"http://{router_ip}/", timeout=t).read()
+                opener.open(base + "/", timeout=t).read()
             except Exception:
                 pass
             # 打印所有 cookie，确认完整性
@@ -142,15 +147,24 @@ def web_login(router_ip, username, password, timeout=10, retries=3, retry_delay=
                     f"\n  期间请勿反复尝试，否则会延长锁定时间。"
                 )
 
+        # 该账号已有活动会话（脚本上一次异常退出 / 浏览器未退出）：先注销再重试
+        if "已经登录" in body:
+            print("  [web] 该账号已有活动会话（浏览器或上次脚本未退出），自动注销后重试...")
+            try:
+                web_logout(router_ip, opener, timeout=t, port=port)
+            except Exception:
+                pass
+            time.sleep(2)
+
         # 200 + 登录页 = 会话冲突或密码错误，等待重试
         if code == 200 and attempt < retries:
             print(f"  [web] 登录未成功（HTTP {code}），{retry_delay}s 后重试 "
                   f"({attempt}/{retries})...")
             print("  提示：光猫只允许一个管理会话，请在浏览器退出登录后再跑脚本")
             time.sleep(retry_delay)
-            opener, cj, t = _open(router_ip, timeout)
+            opener, cj, t = _open(router_ip, timeout, port)
             try:
-                opener.open(f"http://{router_ip}/", timeout=t).read()
+                opener.open(base + "/", timeout=t).read()
             except Exception:
                 pass
             continue
@@ -159,39 +173,3 @@ def web_login(router_ip, username, password, timeout=10, retries=3, retry_delay=
         f"登录失败：重试 {retries} 次仍未拿到 session。"
         f"最后 HTTP {code}，响应 {body[:200]}"
     )
-
-
-def enable_telnet(router_ip, opener, cj, timeout=10):
-    """通过 Web 接口开启 telnet 服务，返回 (success, message)。
-
-    先 off 再 on，清除残留 telnet 会话。
-    接口：POST /system.cgi?telnet+off / telnet+on（无 body 参数）。
-    """
-    import time
-
-    for action in ["telnet+off", "telnet+on"]:
-        req = urllib.request.Request(
-            f"http://{router_ip}/system.cgi?{action}", data=b"", method="POST"
-        )
-        try:
-            resp = opener.open(req, timeout=timeout)
-            resp.read()
-        except Exception as e:
-            return False, f"{action} 请求失败：{e}"
-        time.sleep(1)
-
-    # 验证：不仅端口要开，还要能收到数据（防端口开但连接立刻断）
-    import socket
-    s = socket.socket()
-    s.settimeout(5)
-    try:
-        s.connect((router_ip, 23))
-        time.sleep(1)
-        data = s.recv(1024)
-        s.close()
-        if data:
-            return True, f"telnet 服务已开启（收到 {len(data)} 字节登录提示）"
-        else:
-            return False, "telnet 端口开放但连接立刻断开（尝试再跑一次 enable-telnet）"
-    except OSError as e:
-        return False, f"telnet 端口未开放：{e}"

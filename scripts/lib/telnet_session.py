@@ -72,6 +72,33 @@ class TelnetSession:
             "  2) 有残留 telnet 会话占用"
         )
 
+    def connect_login(self, mode, user, user_pass, su_pass=None, retries=3):
+        """按机型登录取向连接：mode='root' 走 root+超密直登（TF）；否则 user(+su)（MD）。
+
+        设备 telnet 服务刚开有时不稳定，连接后立即断开，重试 2~3 次通常能成功。
+        """
+        if mode != "root":
+            return self.connect_login_user(user, user_pass, su_pass, retries=retries)
+        last_err = None
+        for attempt in range(1, retries + 1):
+            try:
+                if self.tn:
+                    self.close()
+                self.connect()
+                time.sleep(0.5)
+                self.login_root(su_pass)
+                return True
+            except (EOFError, OSError) as e:
+                last_err = e
+                if attempt < retries:
+                    print(f"[telnet] 连接或登录失败（{e}），2s 后重试（{attempt}/{retries}）...")
+                    time.sleep(2)
+        raise RuntimeError(
+            f"telnet 登录失败（重试 {retries} 次）: {last_err}\n"
+            "  可能原因：1) telnet 未开启（先跑 enable-telnet）"
+            "  2) 有残留 telnet 会话占用 3) SU 超密不正确"
+        )
+
     def login_admin(self, admin_user, admin_pass):
         """超管直接登录到 root (# 提示符)。CMCCAdmin 登录即 root，无需 su。"""
         self._expect(rb"[Ll]ogin[: ]*")
@@ -87,6 +114,23 @@ class TelnetSession:
         self._expect(rb"# *$", timeout=10)
         if self.log:
             print("[telnet] 登录成功，已进入 root (#)")
+        return True
+
+    def login_root(self, root_pass):
+        """TF 路径：用户名固定 root + SU 超密直登（提示符 $ 或 #）。"""
+        self._expect(rb"[Ll]ogin[: ]*")
+        self.tn.write(b"root\n")
+        if self.log:
+            print("[telnet] 已发送用户名: root")
+
+        self._expect(rb"[Pp]assword[: ]*")
+        self.tn.write(root_pass.encode() + b"\n")
+        if self.log:
+            print("[telnet] 已发送 SU 超密")
+
+        self._expect(rb"[$#] *$", timeout=10)
+        if self.log:
+            print("[telnet] 登录成功，已进入 root shell")
         return True
 
     def login(self, admin_user, admin_pass):
@@ -124,18 +168,59 @@ class TelnetSession:
             print("[telnet] 登录成功，已进入 root (#)")
         return True
 
-    def run(self, cmd, timeout=300):
+    def _sync_prompt(self, attempts=5, timeout=6):
+        """标记握手：确认 shell 真正就绪后才继续发命令。
+
+        TF 真机实测：登录提示符匹配可能提前返回（motd 未打完），
+        此时立即发命令会被登录进程吞掉（复现率 4/5）。
+        握手发一条 echo 唯一标记，读到标记输出才证明 shell 可执行命令；
+        未就绪则重试。握手失败最终抛错，避免静默丢失命令。
+        """
+        for _ in range(attempts):
+            marker = f"__FLASH_READY_{int(time.time() * 1000) % 100000}__"
+            self.tn.read_very_eager()
+            self.tn.write(b"\necho " + marker.encode() + b"\n")
+            try:
+                self._expect(re.escape(marker.encode()), timeout=timeout)
+                self.tn.read_very_eager()
+                return True
+            except TimeoutError:
+                time.sleep(1)
+        raise RuntimeError(
+            "shell 握手失败：设备无响应（可能登录未完成或会话异常），请重跑本步")
+
+    def run(self, cmd, timeout=300, retries=3):
         """发送命令并等待结束。返回命令输出（字节）。
 
-        实现：发命令 + echo 唯一标记，读至标记即为输出结束。
+        实现：先握手确认 shell 就绪，再发命令 + echo 唯一标记，读至标记即为输出结束。
+        TF 真机实测：即使握手通过，个别情况下首条命令仍会被设备吞掉
+        （输出里没有命令回显）。因此校验回显存在性，缺失则重发（自愈）。
         长命令（如 dd|tftp 备份）可用大 timeout。
         """
-        marker = f"__FLASH_END_{int(time.time() * 1000)}_{hash(cmd) & 0xffff:04x}__"
-        # 清空缓冲里残留
-        self.tn.read_very_eager()
-        self.tn.write(cmd.encode() + b"\n")
-        self.tn.write(b"echo " + marker.encode() + b"\n")
-        data = self._expect(re.escape(marker.encode()), timeout=timeout)
+        probe = cmd.strip()[:12]  # 命令回显探针（被吞时输出里不会有这段）
+        last_data = b""
+        for attempt in range(1, retries + 1):
+            self._sync_prompt()
+            marker = (f"__FLASH_END_{int(time.time() * 1000)}"
+                      f"_{hash((cmd, attempt)) & 0xffff:04x}__")
+            # 清空缓冲里残留；命令与标记单次写入，缩小行间竞态窗口
+            self.tn.read_very_eager()
+            self.tn.write(cmd.encode() + b"\necho " + marker.encode() + b"\n")
+            try:
+                data = self._expect(re.escape(marker.encode()), timeout=timeout)
+            except TimeoutError:
+                if attempt < retries:
+                    print(f"[telnet] 命令超时无响应（{attempt}/{retries}），重发...")
+                    continue
+                raise
+            if probe.encode() not in data and attempt < retries:
+                # 命令被吞（无回显）：输出不可信，重新握手后重发
+                print(f"[telnet] 疑似命令被设备吞掉（无回显，{attempt}/{retries}），重发...")
+                last_data = data
+                continue
+            last_data = data
+            break
+        data = last_data
         # 去掉标记行本身（marker 出现位置之后的 echo 输出）
         idx = data.rfind(marker.encode())
         if idx != -1:

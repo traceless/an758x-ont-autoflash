@@ -22,7 +22,7 @@ Airoha AN758x 系列 GPON 光猫**免拆自动刷机工具**：无需拆机焊 T
 | 机型 | 型号 | SoC | 状态 |
 |---|---|---|---|
 | MD | 诺基亚 Nokia XG-040G-MD（移动定制） | Airoha AN7581 | ✅ 已支持并实测 |
-| TF | 天邑 TF 系列（移动定制） | Airoha AN758x | 🚧 规划中（凭据/目录框架已预留） |
+| TF | 诺基亚 Nokia XG-040G-TF（电信定制） | Airoha AN7581 | ✅ 已适配（待真机实测） |
 
 ## 快速上手
 
@@ -51,8 +51,8 @@ python3 scripts/flash.py
  刷机主菜单
 ============================================================
   1. [ ] 检查环境            ← 依赖/固件/连通性自检，选择本机 HTTP IP
-  2. [ ] 开启 telnet         ← Web 登录自动开启（MD 默认 CMCCAdmin / aDm8H%MdA）
-  3. [ ] 查询 SuPassword     ← 下载日志包自动提取超密
+  2. [ ] 开启 telnet         ← Web 登录自动开启（MD 默认 CMCCAdmin/aDm8H%MdA；TF 默认 telecomadmin/nE7jA%5m）
+  3. [ ] 查询 SuPassword     ← MD 从日志明文提取 / TF 从 dumpdatamodel.cgi 抓密文 AES 解密
   4. [ ] 备份 mtd 分区       ← 可选仅 mtd6-bosa（推荐）或全量 mtd0~16
   5. [ ] 刷引导              ← 自动 run-stock2ubi 起 :3333 → 刷 bl2+fip → 重启
   6. [ ] U-Boot 恢复页刷机   ← 192.168.0.1 五步子菜单（bl2→UBI→bosa→u-boot→固件）
@@ -84,7 +84,7 @@ python3 scripts/flash.py httpd            # 独立 HTTP 文件服务（默认内
 python3 scripts/flash.py tftpd            # TFTP 服务（备用方案）
 ```
 
-常用参数：`--model MD` / `--http-ip` / `--http-port` / `--router`，详见 `-h`。
+常用参数：`--model MD|TF` / `--http-ip` / `--http-port` / `--router`，详见 `-h`。
 
 ## 目录结构
 
@@ -92,11 +92,12 @@ python3 scripts/flash.py tftpd            # TFTP 服务（备用方案）
 an758x-ont-autoflash/
 ├── scripts/
 │   ├── flash.py            # 主入口（菜单 + 全部子命令）
-│   ├── lib/                # telnet/web/HTTP/UBI 刷写等核心模块
+│   ├── lib/                # telnet/web/HTTP/UBI 刷写等核心模块 + 机型 profile(models.py)
 │   ├── http_server.py      # HTTP 文件服务（GET 下载 + PUT 上传）
 │   ├── tftp_server.py      # TFTP 服务（RFC1350+2347，备用）
 │   └── .env.example        # 配置键说明（.env 运行时自动生成，已 gitignore）
 ├── uboot-md/               # MD 机型固件（preloader / fip / sysupgrade.itb）
+├── uboot-tf/               # TF 机型固件（preloader / fip；sysupgrade.itb 需自行放入）
 ├── tools/
 │   └── an758x-stock2ubi    # 免拆包（设备端运行，起 :3333 服务）
 ├── backup/                 # 分区备份输出（已 gitignore，每台设备唯一）

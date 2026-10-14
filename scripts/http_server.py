@@ -50,7 +50,8 @@ class HttpHandler(SimpleHTTPRequestHandler):
         while remaining > 0:
             buf = self.rfile.read(min(65536, remaining))
             if not buf:
-                break
+                raise ValueError(
+                    f"body 提前断开（已收 {length - remaining}/{length} 字节）")
             out_f.write(buf)
             remaining -= len(buf)
         return length - remaining
@@ -59,12 +60,14 @@ class HttpHandler(SimpleHTTPRequestHandler):
         """解码 chunked transfer encoding，边解码边写文件。
 
         格式： <hex size>\\r\\n <data>\\r\\n ... 0\\r\\n \\r\\n
+        未收到 0 终止块/数据中途断开都视为失败，防止截断文件冒充完整。
         """
         total = 0
         while True:
             size_line = self.rfile.readline().rstrip(b"\r\n")
             if not size_line:
-                break
+                raise ValueError(
+                    "chunked 流中断（未收到 0 终止块）——连接被客户端提前关闭")
             try:
                 size = int(size_line.split(b";")[0], 16)  # 忽略 ;ext
             except ValueError:
@@ -81,7 +84,8 @@ class HttpHandler(SimpleHTTPRequestHandler):
             while remaining > 0:
                 buf = self.rfile.read(min(65536, remaining))
                 if not buf:
-                    break
+                    raise ValueError(
+                        f"chunk 数据提前断开（本块已收 {size - remaining}/{size} 字节）")
                 out_f.write(buf)
                 remaining -= len(buf)
                 total += len(buf)
@@ -132,7 +136,9 @@ class HttpHandler(SimpleHTTPRequestHandler):
             return
 
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-        tmp_path = abs_path + ".uploading"
+        # 临时名带随机后缀：ThreadingHTTPServer 下并发 PUT 同一路径不互踩
+        import uuid
+        tmp_path = abs_path + f".uploading.{uuid.uuid4().hex[:8]}"
 
         received = 0
         try:
@@ -158,7 +164,7 @@ class HttpHandler(SimpleHTTPRequestHandler):
             bak = abs_path + f".{int(time.time())}.bak"
             os.rename(abs_path, bak)
             print(f"  [http] 旧文件归档: {os.path.basename(bak)}")
-        os.rename(tmp_path, abs_path)
+        os.replace(tmp_path, abs_path)
 
         body = f"OK {received}\n".encode()
         self.send_response(200)

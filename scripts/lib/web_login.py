@@ -76,28 +76,27 @@ def web_logout(router_ip, opener, timeout=10, port=80):
 
     接口：GET /login.cgi?out（带当前 opener 的 cookie session）。
     注意：URL 是 ?out 不带等号。
+    纯标准库实现（原 curl 子进程方案在无 curl 环境会静默失败）。
+    不跟随重定向：注销接口返回 302 携带 session 清除 Set-Cookie，
+    自动跟随会丢失该头导致会话未真正注销。
     """
-    import subprocess
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None  # 触发 HTTPError，保留原始 302 响应头
 
-    cookies = {}
+    no_redir = urllib.request.build_opener(_NoRedirect)
     for h in opener.handlers:
-        if hasattr(h, 'cookiejar'):
-            for c in h.cookiejar:
-                cookies[c.name] = c.value
+        if hasattr(h, "cookiejar"):
+            no_redir.add_handler(h)  # 复用当前会话 cookie
             break
-    cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
-
     try:
-        subprocess.run(
-            [
-                "curl", "-s", "-o", "/dev/null",
-                "-H", f"Cookie: {cookie_str}",
-                "--max-time", str(timeout),
-                f"http://{router_ip}:{port}/login.cgi?out",
-            ],
-            capture_output=True, text=True, timeout=timeout + 5
-        )
+        with no_redir.open(f"http://{router_ip}:{port}/login.cgi?out",
+                           timeout=timeout) as resp:
+            resp.read()
         print("  [web] 已退出登录")
+        return True
+    except urllib.error.HTTPError:
+        print("  [web] 已退出登录")  # 302 是注销接口的预期响应
         return True
     except Exception as e:
         print(f"  [web] 退出登录异常：{e}")
@@ -116,7 +115,8 @@ def web_login(router_ip, username, password, timeout=10, retries=3, retry_delay=
 
     # 先 GET 首页，拿 lang cookie 初始化
     try:
-        opener.open(base + "/", timeout=t).read()
+        with opener.open(base + "/", timeout=t) as r:
+            r.read()
     except Exception:
         pass
 
@@ -128,7 +128,8 @@ def web_login(router_ip, username, password, timeout=10, retries=3, retry_delay=
         if has_sid or code == 299:
             # 登录成功后访问首页，获取 -goahead-session- 和 logintoken 等 cookie
             try:
-                opener.open(base + "/", timeout=t).read()
+                with opener.open(base + "/", timeout=t) as r:
+                    r.read()
             except Exception:
                 pass
             # 打印所有 cookie，确认完整性
@@ -156,15 +157,23 @@ def web_login(router_ip, username, password, timeout=10, retries=3, retry_delay=
                 pass
             time.sleep(2)
 
-        # 200 + 登录页 = 会话冲突或密码错误，等待重试
-        if code == 200 and attempt < retries:
+        # 200 + 无 sid + 无"已经登录" + 无 err cookie：最可能是密码错误。
+        # 同密码重试只会给光猫失败计数器 +1 加速锁定，直接中止。
+        if code == 200 and "已经登录" not in body and not err_info:
+            raise RuntimeError(
+                f"登录失败（HTTP {code}，未取得 sid，且非会话冲突）："
+                f"请核对用户名/密码。响应片段: {body[:150]!r}")
+
+        # 其余情况（会话冲突已注销重试 / 401、403、5xx 等瞬时错误）等待后重试
+        if attempt < retries:
             print(f"  [web] 登录未成功（HTTP {code}），{retry_delay}s 后重试 "
                   f"({attempt}/{retries})...")
             print("  提示：光猫只允许一个管理会话，请在浏览器退出登录后再跑脚本")
             time.sleep(retry_delay)
             opener, cj, t = _open(router_ip, timeout, port)
             try:
-                opener.open(base + "/", timeout=t).read()
+                with opener.open(base + "/", timeout=t) as r:
+                    r.read()
             except Exception:
                 pass
             continue

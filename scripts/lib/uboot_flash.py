@@ -80,7 +80,7 @@ def upload_file(host, path, timeout=300):
         obj = json.loads(raw.decode("utf-8", "ignore"))
     except ValueError:
         raise UbootError(f"上传响应非 JSON: {raw[:200]!r}")
-    uid = obj.get("upload_id") or obj.get("id")
+    uid = obj.get("upload_id", obj.get("id"))  # 成员取值而非 or，避免吞掉合法的 0
     if uid is None:
         raise UbootError(f"上传响应无 upload_id: {obj}")
     return uid
@@ -130,7 +130,10 @@ def wait_task(host, task_id, timeout=300, interval=2.0, label=""):
     while time.time() < deadline:
         try:
             st = _get_task(host, task_id)
-        except (UbootError, ValueError) as e:
+        except (UbootError, ValueError, OSError) as e:
+            # OSError 兜底裸 socket.timeout/连接重置：设备擦写时恢复页会
+            # accept 后挂起，urllib 抛的是 socket.timeout（OSError 子类但
+            # 不是 URLError），不接住会击穿轮询容错误报任务失败
             consec += 1
             print(f"\r    设备正忙于擦除/写入，等待页面响应，自动重试中"
                   f"（第{consec}次）…", end="", flush=True)
@@ -141,6 +144,9 @@ def wait_task(host, task_id, timeout=300, interval=2.0, label=""):
             continue
         consec = 0
         last = st
+        if not isinstance(st, dict):
+            # 404 降级接口可能返回 JSON 数组等非 dict 结构
+            raise UbootError(f"task 状态非预期结构: {st!r}")
         busy = st.get("busy", False)
         phase = st.get("phase", "")
         print(f"\r    [{label}] busy={busy} phase={phase}   ",

@@ -8,7 +8,6 @@ import io
 import os
 import tarfile
 import gzip
-import tempfile
 import urllib.request
 
 
@@ -88,7 +87,7 @@ def fetch_supass_via_dumpdatamodel(opener, router_ip, profile, verbose=False):
     返回明文候选列表（可能为空）。
     """
     import re as _re
-    mgmt = int(profile.get("mgmt_port", 8080))
+    mgmt = int(profile.get("mgmt_port", 80))  # 缺省与 telnet_open 一致
     base = f"http://{router_ip}:{mgmt}"
 
     # 1. 取页面拿 csrf_token
@@ -96,12 +95,13 @@ def fetch_supass_via_dumpdatamodel(opener, router_ip, profile, verbose=False):
     if verbose:
         print(f"  [web] GET {page_url} 获取 csrf_token ...")
     try:
-        page = opener.open(page_url, timeout=15).read().decode("utf-8", "ignore")
+        with opener.open(page_url, timeout=15) as resp:
+            page = resp.read().decode("utf-8", "ignore")
     except Exception as e:
         if verbose:
             print(f"  [web] {page_url} 失败：{e}")
         return []
-    m = _re.search(r'csrf_token" value="([^"]+)"', page)
+    m = _re.search(r'csrf_token"[^>]*value="([^"]+)"', page)  # 属性顺序无关
     if not m:
         if verbose:
             print("  [web] 页面未找到 csrf_token（可能未登录或页面结构变化）")
@@ -113,7 +113,9 @@ def fetch_supass_via_dumpdatamodel(opener, router_ip, profile, verbose=False):
     # 2. POST ?data 拉数据模型（带 token 与同源 Referer）
     data_url = f"{page_url}?data"
     req = urllib.request.Request(
-        data_url, data=f"csrf_token={token}".encode(), method="POST")
+        data_url,
+        data=urllib.parse.urlencode({"csrf_token": token}).encode(),
+        method="POST")  # urlencode：token 含 +/= 时原样拼接会被服务端误解码
     req.add_header("X-Requested-With", "XMLHttpRequest")
     req.add_header("Referer", page_url)
     req.add_header("Content-Type",
@@ -121,7 +123,8 @@ def fetch_supass_via_dumpdatamodel(opener, router_ip, profile, verbose=False):
     if verbose:
         print(f"  [web] POST {data_url} 下载数据模型 ...")
     try:
-        data = opener.open(req, timeout=60).read()
+        with opener.open(req, timeout=60) as resp:
+            data = resp.read()
     except Exception as e:
         if verbose:
             print(f"  [web] {data_url} 失败：{e}")
@@ -215,8 +218,7 @@ def fetch_supass_via_web(opener, router_ip, verbose=False):
                 print(f"  [web] 非 tar 格式，跳过")
             continue
 
-        # 遍历 tar 成员，找 .tgz 和 messages 文件
-        tmpdir = tempfile.mkdtemp(prefix="supass_")
+        # 遍历 tar 成员，找 .tgz 和 messages 文件（全程内存解压，无临时目录）
         try:
             for member in tar.getmembers():
                 name = member.name
@@ -244,12 +246,6 @@ def fetch_supass_via_web(opener, router_ip, verbose=False):
                     break
         finally:
             tar.close()
-            # 清理临时目录
-            try:
-                import shutil
-                shutil.rmtree(tmpdir)
-            except Exception:
-                pass
 
         if found:
             break

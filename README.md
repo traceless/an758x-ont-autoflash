@@ -95,7 +95,7 @@ python3 scripts/flash.py httpd            # 独立 HTTP 文件服务（默认内
 python3 scripts/flash.py tftpd            # TFTP 服务（备用方案）
 ```
 
-常用参数：`--model MD|TF` / `--http-ip` / `--http-port` / `--router`，详见 `-h`。
+常用参数：`--model MD|MF|TF` / `--http-ip` / `--http-port` / `--router`，详见 `-h`。
 
 ## 目录结构
 

@@ -63,8 +63,11 @@ def open_telnet(profile, router_ip, opener=None, timeout=10):
                                   opener, timeout, body=b"")
             print(f"  [web] {detail}")
             time.sleep(1)
-        if _telnet_ready(router_ip):
-            return True, f"telnet 服务已开启（:{mgmt} POST telnet+on 生效）"
+        # telnetd 启动有 1~2s 绑定延迟，立即探测会假失败，做短轮询
+        for _ in range(3):
+            if _telnet_ready(router_ip):
+                return True, f"telnet 服务已开启（:{mgmt} POST telnet+on 生效）"
+            time.sleep(1)
         return False, ("telnet 端口未开放（已 try off/on）。"
                        "请确认 Web 已登录且 system.cgi?telnet 可访问")
 

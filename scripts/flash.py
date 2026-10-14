@@ -81,7 +81,7 @@ IS_WINDOWS = os.name == "nt"
 # -------------------- 公共小工具 --------------------
 
 def write_env(key, value):
-    """更新 .env 里某个键（保留其它键）。"""
+    """更新 .env 里某个键（保留其它键）。写临时文件后原子替换，避免中断截断。"""
     lines = []
     if os.path.isfile(ENV_FILE):
         with open(ENV_FILE, "r", encoding="utf-8") as f:
@@ -90,8 +90,10 @@ def write_env(key, value):
                     continue
                 lines.append(line.rstrip("\n"))
     lines.append(f"{key}={value}")
-    with open(ENV_FILE, "w", encoding="utf-8") as f:
+    tmp = ENV_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+    os.replace(tmp, ENV_FILE)
 
 
 def read_env(key, default=None):
@@ -100,15 +102,21 @@ def read_env(key, default=None):
     with open(ENV_FILE, "r", encoding="utf-8") as f:
         for line in f:
             if line.startswith(key + "="):
-                return line.split("=", 1)[1].strip()
+                # 仅剥离行尾 \r\n，不 strip 首尾空格——密码含尾空格时 strip 会导致登录失败
+                return line.split("=", 1)[1].rstrip("\r\n")
     return default
 
 
 def ping_ok(ip, count=2):
-    """跨平台 ping 自检。"""
+    """跨平台 ping 自检。
+
+    超时参数按平台语义区分：Windows -w 与 macOS -W 均为毫秒（传 1000），
+    仅 Linux -W 为秒（传 1）。统一传 1 会在 Windows/macOS 上变成 1ms 必超时。
+    """
     flag = "-n" if IS_WINDOWS else "-c"
     wait = "-w" if IS_WINDOWS else "-W"
-    cmd = ["ping", flag, str(count), wait, "1", ip]
+    wait_val = "1000" if (IS_WINDOWS or sys.platform == "darwin") else "1"
+    cmd = ["ping", flag, str(count), wait, wait_val, ip]
     ret = subprocess.run(cmd, capture_output=True)
     return ret.returncode == 0
 
@@ -280,6 +288,11 @@ def get_credentials(args):
     su_pass = normalize_su_pass(
         getattr(args, "su_pass", None) or read_env("SU_PASS")
         or ask("SU 超级密码（fetch-supass 提取）", secret=True))
+    if not su_pass:
+        # 空输入绝不写入 .env：否则字面量 "None"/"" 会被当真密码持久化，
+        # 下次登录反复失败还可能触发光猫 Web 登录锁定
+        print("[FAIL] SU 超密为空。请先执行第 3 步 fetch-supass 提取超密，再运行本步骤。")
+        raise SystemExit(1)
     write_env("SU_PASS", su_pass)  # 回写清洗后的值，旧的 val= 脏值自愈
 
     if prof.get("telnet_login") == "root":
@@ -445,10 +458,11 @@ def cmd_check(args):
     _s.settimeout(1)
     try:
         _s.connect(("127.0.0.1", args.http_port))
-        _s.close()
         print(f"  [OK] HTTP 服务在 :{args.http_port} 监听中（备份/刷引导时也会自动内联启动）")
     except Exception:
         print(f"  [—] HTTP 服务当前未启动（执行备份/刷引导时会自动内联启动，无需手动开）")
+    finally:
+        _s.close()
 
     print("\n=== 6. :3333 Web 服务（原厂阶段，需先在光猫跑 an758x-stock2ubi）===")
     if ping_ok(args.router):
@@ -744,9 +758,10 @@ def stock2ubi_ready(router, port=DEFAULT_WEB_PORT):
 
 
 def wait_stock2ubi(router, port=DEFAULT_WEB_PORT, seconds=20):
-    """轮询等待 :3333 就绪。"""
+    """轮询等待 :3333 就绪。按 deadline 计时（探测超时不额外拉长总等待）。"""
     import time
-    for i in range(max(1, seconds // 2)):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
         if stock2ubi_ready(router, port):
             return True
         time.sleep(2)
@@ -890,7 +905,7 @@ def _verify_backup_files(partitions, mtd_sizes):
         actual = os.path.getsize(path)
         if expect is not None and actual != expect:
             bad = path + ".bad"
-            os.rename(path, bad)
+            os.replace(path, bad)  # os.replace 在 Windows 上也覆盖已存在的 .bad
             failures.append((name,
                              f"大小不符（实际 {actual}B，/proc/mtd 声明 {expect}B），"
                              f"已改名 {os.path.basename(bad)} 防止误用"))
@@ -932,6 +947,7 @@ def cmd_backup(args):
         sess.connect_login(login_mode, user, user_pass, su_pass)
     except Exception:
         forget_telnet()  # 登录失败，清缓存让下次重新询问
+        sess.close()     # 释放 socket 与设备端会话，避免残留会话占用
         raise
     remember_telnet(user, user_pass)  # 验证通过才缓存
     try:
@@ -1013,6 +1029,7 @@ def cmd_run_stock2ubi(args):
         sess.connect_login(login_mode, user, user_pass, su_pass)
     except Exception:
         forget_telnet()  # 登录失败，清缓存让下次重新询问
+        sess.close()     # 释放 socket 与设备端会话，避免残留会话占用
         raise
     remember_telnet(user, user_pass)  # 验证通过才缓存
     try:
@@ -1083,6 +1100,14 @@ def rotate_existing(path):
 
 def cmd_web_backup(args):
     from lib.http_flash import backup_partition
+    model = resolve_model(args)
+    if model != "MD":
+        # MTD_PARTITIONS 是 MD 布局硬编码；TF/MF 分区索引/命名不同，
+        # 错误命名的备份进入 uboot-flash 第 3 步会刷错板级数据（不可再生）
+        print(f"[FAIL] web-backup 仅适用于 MD 机型（固定 MD 分区表）。")
+        print(f"  {model} 机型请使用菜单第 4 步备份（按 /proc/mtd 动态解析，"
+              f"或 CLI: python3 flash.py --model {model} backup）")
+        return 1
     os.makedirs(BACKUP_DIR, exist_ok=True)
     ok, fail = 0, 0
     for index, name in MTD_PARTITIONS:
@@ -1100,6 +1125,7 @@ def cmd_web_backup(args):
             print(f"   [FAIL] {e}")
             fail += 1
     print(f"\n完成: 成功 {ok}，失败 {fail}。文件在 {BACKUP_DIR}")
+    return 1 if fail else 0
 
 
 def cmd_web_flash(args):
@@ -1108,11 +1134,11 @@ def cmd_web_flash(args):
     bl2_def, fip_def = find_bl2_fip(model)
     bl2 = args.bl2 or bl2_def
     fip = args.fip or fip_def
-    if not os.path.isfile(bl2):
+    if not bl2 or not os.path.isfile(bl2):
         print(f"[FAIL] bl2 (preloader) 未找到: {bl2}\n"
               f"  请将 preloader 文件放入 {model_uboot_dir(model)}/（文件名含 preloader 即可）")
         return 1
-    if not os.path.isfile(fip):
+    if not fip or not os.path.isfile(fip):
         print(f"[FAIL] fip (bl31-u-boot) 未找到: {fip}\n"
               f"  请将 fip 文件放入 {model_uboot_dir(model)}/（文件名含 fip 即可）")
         return 1
@@ -1203,12 +1229,11 @@ def cmd_uboot_flash(args):
     if missing_bd:
         unavailable[3] = "、".join(os.path.join(BACKUP_DIR, f) for f in missing_bd)
 
-    # 前置：恢复页可达
+    # 前置：恢复页可达（TCP 探活；GET / 会因根路径非 200 误判）
     print(f"目标: http://{host}  （U-Boot 恢复页，设备须处于恢复模式）")
-    try:
-        urllib.request.urlopen(f"http://{host}/", timeout=5)
+    if uboot_recovery_up(host, timeout=5):
         print("[OK] 恢复页可达")
-    except Exception:
+    else:
         print(f"[FAIL] http://{host}/ 不可达。")
         print("  设备须处于 U-Boot 恢复模式（192.168.0.x 网段）")
         return 1
@@ -1367,7 +1392,7 @@ def cmd_menu(args):
         model=None,
         user=None, user_pass=None, su_pass=None,
         backup_mode=None,
-        bl2=None, fip=None, bosa=None, itb=None,
+        bl2=None, fip=None, bosa=None, ri=None, itb=None,
         uboot_host=DEFAULT_UBOOT_HOST, uboot_timeout=DEFAULT_UBOOT_TIMEOUT,
         step=None, yes=False,
         skip_bl2=False, skip_bosa=False, skip_uboot=False,
@@ -1448,10 +1473,16 @@ def cmd_menu(args):
 
 
 def main():
+    # Windows 重定向输出时 cp936 编不下 ✓⚠ 等字符，降级为替换避免中途崩溃
+    try:
+        sys.stdout.reconfigure(errors="replace")
+        sys.stderr.reconfigure(errors="replace")
+    except Exception:
+        pass
     p = argparse.ArgumentParser(
         description="AN758x 光猫免拆刷机助手（XG-040G-MD / XG-040G-MF / XG-040G-TF，跨平台，纯标准库）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="流程详见文件顶部注释。先 doctor，再 fetch-supass，依次往下。",
+        epilog="流程详见文件顶部注释。先 check，再 fetch-supass，依次往下。",
     )
     p.add_argument("--router", default=DEFAULT_ROUTER_IP,
                    help=f"路由器 IP（默认 {DEFAULT_ROUTER_IP}）")
@@ -1474,8 +1505,6 @@ def main():
     pe.add_argument("--web-pass", default=None, help="Web 密码（默认按机型提示，见 --model）")
     pe.set_defaults(func=cmd_enable_telnet)
     pf = sub.add_parser("fetch-supass", help="Web 登录光猫提取 SuPassword（MD 日志明文 / MF、TF dumpdatamodel+AES）")
-    pf.add_argument("--user", default=None, help="telnet 用户名（TF 机型无需）")
-    pf.add_argument("--password", default=None, help="telnet 密码（TF 机型无需）")
     pf.set_defaults(func=cmd_fetch_supass)
 
     pl = sub.add_parser("login", help="测试 telnet 登录到 root #")

@@ -8,7 +8,11 @@
                      状态: {"id","state","busy","phase","code","output",...}
 
 操作序列（顺序固定，每步必须 code==0 才继续）：
-  flash-bl2 → ubi-rebuild → flash-board-data(bosa) → flash-uboot → flash
+  flash-bl2 → ubi-rebuild → flash-board-data(bosa) + flash-board-data(ri)
+  → flash-uboot → flash
+  （ri 为新款 U-Boot 新增的板级数据项，MD/TF 都需要；bosa 与 ri 分两次
+   上传+下发任务，请求体如 {"operation":"flash-board-data","target":"ri",
+   "upload_id":N}）
 """
 import json
 import os
@@ -115,16 +119,27 @@ def _get_task(host, task_id, timeout=10):
 
 
 def wait_task(host, task_id, timeout=300, interval=2.0, label=""):
-    """轮询任务直到 busy=false；code!=0 抛错。返回最终状态对象。"""
+    """轮询任务直到 busy=false；code!=0 抛错。返回最终状态对象。
+
+    设备执行擦除/写入时恢复页会短暂无响应（HTTP 超时），属正常现象，
+    自动重试；连续 15 次（约 30s）无响应才追加升级提示。
+    """
     deadline = time.time() + timeout
     last = None
+    consec = 0  # 连续轮询失败次数（成功即清零）
     while time.time() < deadline:
         try:
             st = _get_task(host, task_id)
         except (UbootError, ValueError) as e:
-            print(f"    (轮询异常，重试: {e})")
+            consec += 1
+            print(f"\r    设备正忙于擦除/写入，等待页面响应，自动重试中"
+                  f"（第{consec}次）…", end="", flush=True)
+            if consec == 15:
+                print("\n    ⓘ 已连续多次无响应；若最终报「任务超时」，"
+                      "可在菜单重新执行本步")
             time.sleep(interval)
             continue
+        consec = 0
         last = st
         busy = st.get("busy", False)
         phase = st.get("phase", "")

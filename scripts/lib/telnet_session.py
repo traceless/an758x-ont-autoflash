@@ -223,17 +223,17 @@ class TelnetSession:
         data = last_data
         # 去掉标记行本身（marker 出现位置之后的 echo 输出）
         idx = data.rfind(marker.encode())
-        if idx != -1:
-            # 去掉命令回显本身 + marker 行
-            head = data[:idx]
-            # 找到命令回显行（第一行）的换行，去掉
-            first_nl = head.find(b"\n")
-            if first_nl != -1:
-                head = head[first_nl + 1:]
-            # 去掉末尾 echo marker 那行的前缀
-            # head 现在不包含 marker，但可能包含 "echo __..." 命令本身
-            return head
-        return data
+        if idx == -1:
+            return data
+        head = data[:idx]  # head 不包含 marker
+        first_nl = head.find(b"\n")
+        if first_nl != -1:
+            head = head[first_nl + 1:]  # 去掉第一行（命令回显）
+        # 过滤标记残渣行（TTY 回显的 "echo __FLASH_END_xxx__" 会污染输出判断）
+        return b"\n".join(
+            ln for ln in head.split(b"\n")
+            if b"__FLASH_END_" not in ln and b"__FLASH_READY_" not in ln
+        )
 
     def close(self):
         if self.tn:

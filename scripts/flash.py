@@ -973,8 +973,10 @@ def cmd_run_stock2ubi(args):
     try:
         # 0. 若设备上已有进程在跑（上次脚本超时但进程未死，仍在初始化），
         #    不重复拉起，直接跳到等待 :3333。
+        #    注意必须整行锚定匹配：命令回显行里含 "S2U_RUNNING" 字样，
+        #    子串匹配会把回显误判成真输出（TF 真机踩坑：误报已有进程、跳过下载）
         out = sess.run("pidof an758x-stock2ubi && echo S2U_RUNNING || echo S2U_NOT_RUNNING", timeout=15)
-        if b"S2U_RUNNING" in out:
+        if re.search(rb"^S2U_RUNNING\r?$", out, re.M):
             print("[telnet] 设备上已有 an758x-stock2ubi 进程在运行（可能在初始化），直接等待 :3333")
         else:
             # 1. 下载 + 赋可执行权限 + 校验：单条 && 链由设备 shell 保证顺序，
@@ -1119,17 +1121,23 @@ def cmd_uboot_flash(args):
         cand = os.path.join(BACKUP_DIR, "mtd6-bosa.bin")
         if os.path.isfile(cand):
             bosa = cand
+    ri = getattr(args, "ri", None)
+    if not ri:
+        cand = os.path.join(BACKUP_DIR, "mtd7-ri.bin")
+        if os.path.isfile(cand):
+            ri = cand
     itb = args.itb or _find_itb(model)
 
     # 5 步定义：(编号, 名称, 文件或None, run_step 关键字参数)
     # 任意一步都可独立重复执行
+    # 第3步 = 板级数据两项：bosa（校准）+ ri（新款 U-Boot 新增，MD/TF 都要刷）
     steps_def = [
         (1, "刷 preloader (flash-bl2)", bl2,
          dict(operation="flash-bl2", timeout=120)),
         (2, "重建 UBI (ubi-rebuild)", None,
          dict(operation="ubi-rebuild", timeout=300)),
-        (3, "刷 bosa 板级数据 (flash-board-data)", bosa,
-         dict(operation="flash-board-data", target="bosa", timeout=120)),
+        (3, "刷板级数据 (flash-board-data: bosa + ri)", None,
+         dict(operation="flash-board-data", timeout=120)),
         (4, "刷 U-Boot (flash-uboot)", fip,
          dict(operation="flash-uboot", timeout=120)),
         (5, "刷系统固件 (flash)", itb,
@@ -1141,6 +1149,14 @@ def cmd_uboot_flash(args):
     for num, label, path, kw in steps_def:
         if path and not os.path.isfile(path):
             unavailable[num] = path
+    # 第3步需要 bosa + ri 两个备份文件（新 U-Boot 增加 ri 写入）
+    missing_bd = [
+        f"mtd{6 if t == 'bosa' else 7}-{t}.bin"
+        for t, p in (("bosa", bosa), ("ri", ri))
+        if not p or not os.path.isfile(p)
+    ]
+    if missing_bd:
+        unavailable[3] = "、".join(os.path.join(BACKUP_DIR, f) for f in missing_bd)
 
     # 前置：恢复页可达
     print(f"目标: http://{host}  （U-Boot 恢复页，设备须处于恢复模式）")
@@ -1159,12 +1175,33 @@ def cmd_uboot_flash(args):
     except Exception:
         pass  # 状态探测失败不阻塞，各步骤自身会校验
 
+    def do_board_data():
+        """第3步：刷 bosa + ri 板级数据（先 bosa 后 ri，各自上传+下发任务）。"""
+        t0 = time.time()
+        try:
+            run_step(host, "第3步a 刷 bosa 板级数据 (flash-board-data)",
+                     upload_path=bosa, operation="flash-board-data",
+                     target="bosa", timeout=120)
+            run_step(host, "第3步b 刷 ri 板级数据 (flash-board-data)",
+                     upload_path=ri, operation="flash-board-data",
+                     target="ri", timeout=120)
+        except UbootError as e:
+            print(f"\n[FAIL] 第 3 步失败: {e}")
+            print("  设备仍在 U-Boot 恢复模式，排查后可在菜单重新执行该步骤。")
+            return False
+        print(f"[OK] 第 3 步「刷板级数据 (bosa + ri)」成功（耗时 {time.time()-t0:.0f}s）")
+        return True
+
     def do_step(num):
         """执行单步，成功返回 True。"""
         _, label, path, kw = steps_def[num - 1]
         if num in unavailable:
             print(f"[FAIL] 第 {num} 步所需文件不存在: {unavailable[num]}")
+            if num == 3:
+                print("  请先完成备份（bosa 模式会同时备份 mtd6-bosa.bin 和 mtd7-ri.bin）")
             return False
+        if num == 3:
+            return do_board_data()
         t0 = time.time()
         try:
             run_step(host, f"第{num}步 {label}", upload_path=path, **kw)
@@ -1423,6 +1460,8 @@ def main():
     puf.add_argument("--fip", default=None, help="bl31-u-boot fip 文件路径")
     puf.add_argument("--bosa", default=None,
                      help="mtd6-bosa.bin 路径（默认找 backup/）")
+    puf.add_argument("--ri", default=None,
+                     help="mtd7-ri.bin 路径（默认找 backup/，第3步与 bosa 一起刷）")
     puf.add_argument("--itb", default=None, help="sysupgrade.itb 路径（默认找 uboot/）")
     puf.add_argument("--step", type=int, choices=[1, 2, 3, 4, 5], default=None,
                      help="非交互：只执行指定的单一步骤（1-5），不进菜单")

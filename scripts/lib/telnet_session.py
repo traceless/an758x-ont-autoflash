@@ -1,10 +1,13 @@
-"""telnetlib 封装：登录光猫到 root # 提示符，发送命令并捕获输出。
+"""telnet 封装：登录光猫到 root # 提示符，发送命令并捕获输出。
 
-跨平台（macOS/Linux/Windows 均自带 telnetlib，Python 3.13 起需改用 telnetlib3）。
+底层使用 lib/_telnetlib.py（vendored CPython 官方 telnetlib，接口与标准库
+telnetlib 完全一致）。标准库 telnetlib 自 Python 3.11 弃用、3.13 起移除
+（PEP 594），vendor 后 Python 3.8~3.13+ 通用且保持零依赖。
 """
 import re
-import telnetlib
 import time
+
+from lib import _telnetlib as telnetlib
 
 
 class TelnetSession:

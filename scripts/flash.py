@@ -383,10 +383,10 @@ def save_web_credentials(model, user, password):
 def cmd_check(args):
     print("=== 1. 依赖检查 ===")
     try:
-        import telnetlib
-        print(f"  [OK] telnetlib -> {telnetlib.__file__}")
-    except ImportError:
-        print("  [FAIL] telnetlib 不可用（Python 3.13+ 需 pip install telnetlib3）")
+        from lib import _telnetlib
+        print(f"  [OK] telnet -> lib/_telnetlib.py（vendored 官方实现，无版本依赖）")
+    except ImportError as e:
+        print(f"  [FAIL] telnet 模块不可用: {e}")
     try:
         import urllib.request, json, tarfile
         print("  [OK] urllib / json / tarfile")
@@ -836,16 +836,17 @@ def _build_backup_cmds(tftp_ip, partitions):
 
 
 def read_mtd_table(sess, retries=1):
-    """在已登录的 telnet 会话上读 /proc/mtd，返回 [(index, name)]（按 index 升序）。
+    """在已登录的 telnet 会话上读 /proc/mtd，返回 [(index, name, size)]（按 index 升序）。
 
+    size 为分区字节数（/proc/mtd 的 size 列），用于备份后文件大小校验。
     读取为空时重试一次（run 每次会先做 shell 握手，竞态已由握手兜底）。
     """
     for attempt in range(retries + 1):
         out = sess.run("cat /proc/mtd", timeout=15)
         table = []
-        for m in re.finditer(r'mtd(\d+):\s+[0-9a-fA-F]+\s+[0-9a-fA-F]+\s+"([^"]+)"',
+        for m in re.finditer(r'mtd(\d+):\s+([0-9a-fA-F]+)\s+[0-9a-fA-F]+\s+"([^"]+)"',
                              out.decode("utf-8", "ignore")):
-            table.append((int(m.group(1)), m.group(2).strip()))
+            table.append((int(m.group(1)), m.group(3).strip(), int(m.group(2), 16)))
         table.sort()
         if table:
             return table
@@ -862,14 +863,38 @@ def build_backup_partitions(mtd_table, mode):
     if mode == "bosa":
         parts = []
         for want, fallback in (("bosa", 6), ("ri", 7)):
-            hit = [(i, n) for i, n in mtd_table if n == want]
+            hit = [(i, n) for i, n, _ in mtd_table if n == want]
             if hit:
                 i, n = hit[0]
             else:
                 i, n = fallback, want
             parts.append((i, f"mtd{i}-{n}.bin"))
         return parts
-    return [(i, f"mtd{i}-{name}.bin") for i, name in mtd_table]
+    return [(i, f"mtd{i}-{name}.bin") for i, name, _ in mtd_table]
+
+
+def _verify_backup_files(partitions, mtd_sizes):
+    """备份后按 /proc/mtd 声明大小逐文件校验，杜绝 curl 静默失败仍报成功。
+
+    curl 连接失败/HTTP 400/链路中断会让文件缺失或截断（&& 链中断后续分区
+    不再执行）；dd 中途死掉时 curl 仍正常收尾，只有大小对拍能发现截断。
+    返回失败列表 [(文件名, 原因), ...]；大小不符的文件加 .bad 后缀防止误用。
+    """
+    failures = []
+    for i, name in partitions:
+        path = os.path.join(BACKUP_DIR, name)
+        expect = mtd_sizes.get(i)
+        if not os.path.isfile(path):
+            failures.append((name, "文件缺失（传输链在该分区前已中断）"))
+            continue
+        actual = os.path.getsize(path)
+        if expect is not None and actual != expect:
+            bad = path + ".bad"
+            os.rename(path, bad)
+            failures.append((name,
+                             f"大小不符（实际 {actual}B，/proc/mtd 声明 {expect}B），"
+                             f"已改名 {os.path.basename(bad)} 防止误用"))
+    return failures
 
 
 def _choose_backup_mode(args):
@@ -919,12 +944,13 @@ def cmd_backup(args):
                   "请重跑本步；若反复失败请先执行 login 排查会话状态")
             return 1
         partitions = build_backup_partitions(mtd_table, mode)
+        mtd_sizes = {i: sz for i, _, sz in mtd_table}
         if mode == "bosa":
             print("[OK] 关键分区定位: "
                   + ", ".join(f'mtd{i} "{n}"' for i, n in partitions))
         else:
             print(f"[OK] 设备共 {len(partitions)} 个分区: "
-                  + ", ".join(f"mtd{i}={n}" for i, n in mtd_table))
+                  + ", ".join(f"mtd{i}={n}" for i, n, _ in mtd_table))
         # 同名旧备份先归档，避免覆盖（mtd6-bosa.bin 校准数据丢了无法找回）
         for _, name in partitions:
             rotated = rotate_existing(os.path.join(BACKUP_DIR, name))
@@ -939,7 +965,26 @@ def cmd_backup(args):
             print(f"$ {cmd[:120]}{'...' if len(cmd) > 120 else ''}")
             out = sess.run(cmd, timeout=900)
             print(out.decode("utf-8", "ignore"))
-        print(f"\n[OK] 备份完成（{scope_label}）。文件在 {BACKUP_DIR}")
+        # 备份后完整性校验：curl 失败/链路中断时文件会缺失或截断，
+        # 按 /proc/mtd 声明大小逐一对拍，杜绝"传输失败仍报成功"
+        print("\n=== 大小校验（对照 /proc/mtd 声明） ===")
+        for i, name in partitions:
+            path = os.path.join(BACKUP_DIR, name)
+            expect = mtd_sizes.get(i)
+            if os.path.isfile(path):
+                print(f"  [OK] {name} ({os.path.getsize(path)} B)")
+            else:
+                print(f"  [MISS] {name}（缺失，应为 {expect} B）")
+        failures = _verify_backup_files(partitions, mtd_sizes)
+        if failures:
+            print(f"\n[FAIL] 备份不完整（{len(failures)}/{len(partitions)} 个分区异常），"
+                  "以上非 [OK] 文件不可用于恢复：")
+            for name, reason in failures:
+                print(f"  - {name}: {reason}")
+            print("  常见原因：HTTP 服务/网络中断。可直接重跑本步重试。")
+            return 1
+        print(f"\n[OK] 备份完成并通过大小校验（{scope_label}，"
+              f"{len(partitions)}/{len(partitions)} 个文件）。文件在 {BACKUP_DIR}")
         print("  务必把 bosa（校准）和 ri 这两个文件单独多存几处！")
     finally:
         sess.close()
@@ -1076,7 +1121,7 @@ def cmd_web_flash(args):
     print(f"  fip (bl31-u-boot)  = {fip}  ({os.path.getsize(fip)} 字节)")
     print(f"  目标: POST http://{args.router}:{args.web_port}/api/flash")
     if not args.yes:
-        print("\n⚠ 刷错引导会变砖，请确认 bl2/fip 文件对应 XG-040G-MD！")
+        print(f"\n⚠ 刷错引导会变砖，请确认 bl2/fip 文件对应 {DEVICE_MODELS[model]['name']}！")
         input("按回车继续，Ctrl+C 取消...")
     try:
         resp = flash_bootloader(args.router, bl2, fip,

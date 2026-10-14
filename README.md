@@ -9,7 +9,7 @@ Airoha AN758x 系列 GPON 光猫**免拆自动刷机工具**：无需拆机焊 T
 
 - **免拆机**：全程 telnet + HTTP，不需要 TTL 串口、不需要拆壳
 - **一键菜单**：`python3 scripts/flash.py` 进入 1→6 步引导式菜单，新手按顺序选即可
-- **零依赖**：纯 Python 3 标准库实现，无需 pip install，macOS / Linux / Windows 通用
+- **零依赖**：纯 Python 3 实现，无需 pip install，macOS / Linux / Windows 通用；telnet 使用内置的官方实现（`lib/_telnetlib.py`，vendored 自 CPython 标准库），不依赖标准库 telnetlib（Python 3.13 起已移除），Python 3.8~3.13+ 全兼容
 - **安全可靠**：
   - 刷机前自动备份 bosa + ri（光模块校准/射频数据，**每台唯一、丢失不可再生**）
   - 已有备份自动归档防覆盖，上传校验非空才替换

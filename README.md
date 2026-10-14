@@ -63,9 +63,9 @@ python3 scripts/flash.py
 
 ### 3. 刷机流程详解
 
-完整的流程图、凭据说明、手动操作点见 [刷机流程图.md](刷机流程图.md)，原始教程见 [xg-040g-md免拆教程.md](xg-040g-md免拆教程.md)。
+完整的流程图、凭据说明、手动操作点见 [刷机流程图.md](docs/刷机流程图.md)，原始教程见 [xg-040g-md免拆教程.md](docs/xg-040g-md免拆教程.md)。
 
-![刷机流程](flash-flow.svg)
+![刷机流程](docs/flash-flow.svg)
 
 ## 命令行子命令（高级用法）
 
@@ -100,8 +100,10 @@ an758x-ont-autoflash/
 ├── tools/
 │   └── an758x-stock2ubi    # 免拆包（设备端运行，起 :3333 服务）
 ├── backup/                 # 分区备份输出（已 gitignore，每台设备唯一）
-├── 刷机流程图.md           # 流程图 + 凭据表 + 操作速查
-└── xg-040g-md免拆教程.md   # 原始免拆教程
+└── docs/                   # 文档
+    ├── 刷机流程图.md       # 流程图 + 凭据表 + 操作速查
+    ├── flash-flow.svg      # 刷机流程图
+    └── xg-040g-md免拆教程.md # 原始免拆教程
 ```
 
 ## 常见问题

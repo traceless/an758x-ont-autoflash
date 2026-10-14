@@ -1148,7 +1148,15 @@ def cmd_web_flash(args):
     print(f"  目标: POST http://{args.router}:{args.web_port}/api/flash")
     if not args.yes:
         print(f"\n⚠ 刷错引导会变砖，请确认 bl2/fip 文件对应 {DEVICE_MODELS[model]['name']}！")
-        input("按回车继续，Ctrl+C 取消...")
+        # 输入 y 才继续：回车容易误触，破坏性操作必须显式确认
+        try:
+            ans = input("输入 y 确认继续，其他任意键取消: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消。")
+            return 1
+        if ans != "y":
+            print("已取消。")
+            return 1
     try:
         resp = flash_bootloader(args.router, bl2, fip,
                                 port=args.web_port, timeout=120)
@@ -1336,10 +1344,14 @@ def cmd_uboot_flash(args):
                 done.add(num)
         elif choice == "a":
             if not args.yes:
+                print("将按序执行 1→5（bl2 → UBI → bosa+ri → u-boot → 固件），任意一步失败即中止。")
                 try:
-                    input("将按序执行 1→5，任意一步失败即中止。回车开始，Ctrl+C 取消...")
+                    ans = input("输入 y 确认全刷，其他任意键取消: ").strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     print("\n已取消。")
+                    continue
+                if ans != "y":
+                    print("已取消。")
                     continue
             all_ok = True
             for num in range(1, 6):

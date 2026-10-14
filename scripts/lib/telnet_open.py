@@ -68,9 +68,10 @@ def open_telnet(profile, router_ip, opener=None, timeout=10):
         return False, ("telnet 端口未开放（已 try off/on）。"
                        "请确认 Web 已登录且 system.cgi?telnet 可访问")
 
-    # cgi_plain（TF，实测机制与 MD 同构）：管理 CGI 在 :8080 goahead，
+    # cgi_plain（TF/MF，实测机制与 MD 同构）：管理 CGI 在 Web 端口 goahead，
     # POST /system.cgi?telnet+on（带 XHR 头与 body）即切换开关。
     # 先 off 清残留会话再 on；每发一次即校验 :23，命中即停。
+    # MF 实测：页面 JS 追加的 csrf_token 传空值同样生效。
     body = b"data&csrf_token="  # 设备页面 JS 的 ajaxSend 会补 csrf_token=（空值即可）
     for act in ("telnet+off", "telnet+on"):
         ok, detail = _try_cgi(router_ip, mgmt, "POST", f"system.cgi?{act}",

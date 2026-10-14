@@ -10,7 +10,8 @@
   default_pass  Web 超管密码（仅作交互输入的回车默认值）
   web_port      Web 登录（/login.cgi）端口
   mgmt_port     管理 CGI（system.cgi / dumpdatamodel.cgi）端口
-  telnet_open   开 telnet 方式：cgi_toggle=MD（POST telnet+off/on）；cgi_plain=TF（/system.cgi?telnet）
+  telnet_open   开 telnet 方式：cgi_toggle=MD（POST telnet+off/on 空 body）；
+                cgi_plain=TF/MF（POST /system.cgi?telnet+off/on，body=data&csrf_token=）
   supass_mode   取超密方式：log_plaintext=日志包明文；dumpdatamodel_aes=dumpdatamodel 密文 AES 解密
   telnet_login  telnet 登录取向：user_su=user/useradmin + su；root=root + 超密直登
 """
@@ -39,6 +40,22 @@ DEVICE_MODELS = {
         "telnet_open": "cgi_plain",
         "supass_mode": "dumpdatamodel_aes",
         "telnet_login": "root",  # root + 超密直登，无需贴纸账号
+    },
+    # MF 实测（XG-040G-MF 真机 2026-10-14 验证）：
+    #   登录 :80 goahead，表单 name/pswd，明文提交即返回 299 + sid；
+    #   开 telnet = POST /system.cgi?telnet+off/on（body=data&csrf_token=，与 TF 同构，空 token 亦可）；
+    #   取超密 = dumpdatamodel.cgi 两步（页面 csrf_token → POST ?data）→ AES 解密，密钥与 TF 同份；
+    #   telnet = root + 解出的超密直登（uid=0，直接 # 提示符）。
+    "MF": {
+        "name": "诺基亚 XG-040G-MF（移动）",
+        "uboot_dir": "uboot-mf",
+        "default_user": "CMCCAdmin",
+        "default_pass": "aDm8H%MdA",
+        "web_port": 80,
+        "mgmt_port": 80,
+        "telnet_open": "cgi_plain",
+        "supass_mode": "dumpdatamodel_aes",
+        "telnet_login": "root",
     },
 }
 

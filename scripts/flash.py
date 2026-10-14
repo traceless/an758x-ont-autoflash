@@ -399,7 +399,7 @@ def cmd_check(args):
 
     print("\n=== 2. 资源目录 ===")
     for name, path in [("backup", BACKUP_DIR),
-                       (f"{model.lower()}-uboot 固件", uboot_dir),
+                       (f"{os.path.basename(uboot_dir)} 固件", uboot_dir),
                        ("tools", TOOLS_DIR)]:
         ok = os.path.isdir(path)
         print(f"  [{'OK' if ok else 'MISS'}] {name}: {path}")
@@ -1404,7 +1404,7 @@ def cmd_menu(args):
 
 def main():
     p = argparse.ArgumentParser(
-        description="AN758x 光猫免拆刷机助手（XG-040G-MD / XG-040G-TF，跨平台，纯标准库）",
+        description="AN758x 光猫免拆刷机助手（XG-040G-MD / XG-040G-MF / XG-040G-TF，跨平台，纯标准库）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="流程详见文件顶部注释。先 doctor，再 fetch-supass，依次往下。",
     )
@@ -1428,7 +1428,7 @@ def main():
     pe.add_argument("--web-user", default=None, help="Web 用户名（默认按机型，回车用机型默认）")
     pe.add_argument("--web-pass", default=None, help="Web 密码（默认按机型提示，见 --model）")
     pe.set_defaults(func=cmd_enable_telnet)
-    pf = sub.add_parser("fetch-supass", help="Web 登录光猫提取 SuPassword（MD 日志明文 / TF dumpdatamodel+AES）")
+    pf = sub.add_parser("fetch-supass", help="Web 登录光猫提取 SuPassword（MD 日志明文 / MF、TF dumpdatamodel+AES）")
     pf.add_argument("--user", default=None, help="telnet 用户名（TF 机型无需）")
     pf.add_argument("--password", default=None, help="telnet 密码（TF 机型无需）")
     pf.set_defaults(func=cmd_fetch_supass)

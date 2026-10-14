@@ -44,9 +44,9 @@ TELNET_LOG_CMDS = [
 ]
 
 
-# -------------------- TF（电信）SuPassword：AES 密文解密 --------------------
-# TF 的日志里没有明文 SuPassword，需从 dumpdatamodel.cgi 抓密文再用 AES-256-CBC 解密。
-# key/IV 与解密方式来自恩山帖 8440823（XG-040G-TF），待真机复核。
+# -------------------- TF/MF（电信/移动）SuPassword：AES 密文解密 --------------------
+# TF/MF 的日志里没有明文 SuPassword，需从 dumpdatamodel.cgi 抓密文再用 AES-256-CBC 解密。
+# key/IV 与解密方式来自恩山帖 8440823（XG-040G-TF），MF 真机实测同份密钥可用。
 _ROUTER_AES_KEY = bytes.fromhex(
     "3D A3 73 D7 DC 82 2E 2A 47 0D EC 37 89 6E 80 D7"
     " 2C 49 B3 16 29 DD C9 97 35 4B 84 03 91 77 9E A4")
@@ -134,12 +134,16 @@ def fetch_supass_via_dumpdatamodel(opener, router_ip, profile, verbose=False):
         print(f"  [web] 数据模型 {len(data)} 字节，提取 SuPassword 密文...")
 
     # 3. 提取密文并解密
+    #    两条正则（主匹配 + 兜底）可能同时命中同一个 SuPassword 元素，
+    #    故按密文去重，避免同一段密文重复解密/重复打印日志。
     found = []
+    seen_cipher = set()
     for pat in _DUMP_SU_PATTERNS:
         for mm in pat.finditer(data):
             c = mm.group(1).decode("ascii", "ignore").strip()
-            if not c:
+            if not c or c in seen_cipher:
                 continue
+            seen_cipher.add(c)
             pt = _decrypt_router_supassword(c)
             if verbose:
                 print(f"  [web] 密文 v={c} -> {'解密成功' if pt else '解密失败'}")

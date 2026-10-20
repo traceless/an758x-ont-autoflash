@@ -24,6 +24,7 @@ Airoha AN758x 系列 GPON 光猫**免拆自动刷机工具**：无需拆机焊 T
 | MD | 诺基亚 Nokia XG-040G-MD（移动定制） | Airoha AN7581 | ✅ 已支持并实测 |
 | MF | 诺基亚 Nokia XG-040G-MF（移动定制） | Airoha AN7583 | ✅ 已适配（开 telnet / 取超密 / telnet 登录已真机实测） |
 | TF | 诺基亚 Nokia XG-040G-TF（电信定制） | Airoha AN7581 | ✅ 已适配并真机实测 |
+| ZN504 | 兆能 ZN504（电信） | ECONET（TClinux） | ✅ 备份链路已实测（免认证取凭据 / telnet 直登 / 分区备份）；第 5 步刷引导同 Nokia 流程；第 6 步后续加入 |
 
 ## 快速上手
 
@@ -45,7 +46,7 @@ cd an758x-ont-autoflash
 python3 scripts/flash.py
 ```
 
-启动后**先选机型**（MD / MF / TF，回车默认上次选择；选择自动记入 `scripts/.env` 下次沿用，命令行 `--model` 可跳过选择），再按 1→6 顺序执行：
+启动后**先选机型**（MD / MF / TF / ZN504，回车默认上次选择；选择自动记入 `scripts/.env` 下次沿用，命令行 `--model` 可跳过选择），再按 1→6 顺序执行：
 
 ```
 ============================================================
@@ -56,7 +57,8 @@ python3 scripts/flash.py
   1. MD  诺基亚 XG-040G-MD（移动）
   2. MF  诺基亚 XG-040G-MF（移动）
   3. TF  诺基亚 XG-040G-TF（电信）（当前默认）
-请选择 [1-3]（回车默认 TF）:
+  4. ZN504  兆能 ZN504（电信）
+请选择 [1-4]（回车默认 TF）:
 
 ============================================================
  刷机主菜单（机型: TF 诺基亚 XG-040G-TF（电信））
@@ -95,7 +97,7 @@ python3 scripts/flash.py httpd            # 独立 HTTP 文件服务（默认内
 python3 scripts/flash.py tftpd            # TFTP 服务（备用方案）
 ```
 
-常用参数：`--model MD|MF|TF` / `--http-ip` / `--http-port` / `--router`，详见 `-h`。
+常用参数：`--model MD|MF|TF|ZN504` / `--http-ip` / `--http-port` / `--router`，详见 `-h`。
 
 ## 目录结构
 
@@ -110,6 +112,7 @@ an758x-ont-autoflash/
 ├── uboot-md/               # MD 机型固件（preloader / fip / sysupgrade.itb；源码见致谢 uboot-an758x）
 ├── uboot-mf/               # MF 机型固件（preloader / fip / sysupgrade.itb；源码见致谢 uboot-an758x）
 ├── uboot-tf/               # TF 机型固件（preloader / fip / sysupgrade.itb；源码见致谢 uboot-an758x）
+├── uboot-zn504/            # ZN504 机型固件（目录预留，刷机流程后续加入）
 ├── tools/
 │   └── an758x-stock2ubi    # 免拆包（设备端运行，起 :3333 服务；源码见致谢 an758x-stock2ubi）
 ├── backup/                 # 分区备份输出（已 gitignore，每台设备唯一）

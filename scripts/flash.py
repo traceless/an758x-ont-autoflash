@@ -107,6 +107,18 @@ def read_env(key, default=None):
     return default
 
 
+def find_backup_by_name(part_name):
+    """在 backup/ 目录按分区名找备份文件 mtd{X}-{part_name}.bin。
+
+    ZN504 无 bosa/ri 分区、backup_partitions 按 /proc/mtd 动态解析输出
+    reservearea 等不同文件名，不能硬编码 mtd6-bosa.bin 这种固定编号。
+    返回第一个匹配文件的完整路径，未找到返回 None。
+    """
+    import glob as _g
+    hits = _g.glob(os.path.join(BACKUP_DIR, f"mtd*-{part_name}.bin"))
+    return hits[0] if hits else None
+
+
 def ping_ok(ip, count=2):
     """跨平台 ping 自检。
 
@@ -285,8 +297,11 @@ def get_credentials(args):
     """
     model = resolve_model(args)
     prof = get_profile(model)
+    # getGateway 机型（ZN504）的 su 密码就是 telnet 密码（profile telnet_pass），
+    # 无需先跑 fetch-supass 也能登录；fetch-supass 取到的实值仍会覆盖写入 SU_PASS
+    su_fallback = prof.get("telnet_pass") if prof.get("supass_mode") == "getGateway" else None
     su_pass = normalize_su_pass(
-        getattr(args, "su_pass", None) or read_env("SU_PASS")
+        getattr(args, "su_pass", None) or read_env("SU_PASS") or su_fallback
         or ask("SU 超级密码（fetch-supass 提取）", secret=True))
     if not su_pass:
         # 空输入绝不写入 .env：否则字面量 "None"/"" 会被当真密码持久化，
@@ -298,12 +313,19 @@ def get_credentials(args):
     if prof.get("telnet_login") == "root":
         return "root", su_pass, su_pass  # TF：root + 超密直登
 
+    # user_su 模式：MD 用贴纸账号（无默认，逐台询问）；
+    # ZN504 等 profile 声明 telnet_user/telnet_pass 的机型凭据全厂通用，回车即默认
+    tu = prof.get("telnet_user")
+    tp = prof.get("telnet_pass")
     user = (getattr(args, "user", None)
             or _SESSION_TELNET.get("user")
-            or ask("telnet 用户名（光猫背后贴纸，user 或 useradmin）"))
+            or ask(f"telnet 用户名（回车默认 {tu}）" if tu
+                   else "telnet 用户名（光猫背后贴纸，user 或 useradmin）", tu))
     user_pass = (getattr(args, "user_pass", None)
                  or _SESSION_TELNET.get("user_pass")
-                 or ask("telnet 密码（光猫背后'默认终端配置密码'）", secret=True))
+                 or ask(f"telnet 密码（回车默认 {tp}）" if tp
+                        else "telnet 密码（光猫背后'默认终端配置密码'）",
+                        tp, secret=True))
     return user, user_pass, su_pass
 
 
@@ -418,16 +440,42 @@ def cmd_check(args):
         print(f"  [{'OK' if ok else 'MISS'}] {name}: {path}")
 
     print("\n=== 3. 关键文件 ===")
+    prof = get_profile(model)
     bl2, fip = find_bl2_fip(model)
-    checks = [
-        ("preloader.bin", bl2),
-        ("bl31-u-boot.fip", fip),
-        ("mtd6-bosa.bin(校准)", os.path.join(BACKUP_DIR, "mtd6-bosa.bin")),
-        ("an758x-stock2ubi", os.path.join(TOOLS_DIR, "an758x-stock2ubi")),
-    ]
-    fw = _find_itb(model)
-    checks.append(("sysupgrade.itb", fw))
+    checks = []
+    if prof.get("stock2ubi", True):
+        # Nokia 系：preloader/fip/板级数据备份/stock2ubi/系统固件
+        checks += [
+            ("preloader.bin", bl2),
+            ("bl31-u-boot.fip", fip),
+            ("an758x-stock2ubi", os.path.join(TOOLS_DIR, "an758x-stock2ubi")),
+        ]
+        # 板级数据备份（按 board_data_flash 的 file_key 通配查找，分区编号运行时已知）
+        for item in prof.get("board_data_flash", []):
+            fk = item["file_key"]
+            target = item["target"]
+            checks.append(
+                (f"flash-board-data target={target} 备份",
+                 os.path.join(BACKUP_DIR, f"mtd*-{fk}.bin"))
+            )
+        fw = _find_itb(model)
+        checks.append(("sysupgrade.itb", fw))
+    else:
+        # 无 stock2ubi 阶段的机型（未来扩展）：仅检查关键备份分区
+        for want in prof.get("backup_partitions", []):
+            checks.append((f"{want}.bin(关键备份)",
+                           os.path.join(BACKUP_DIR, f"mtd*-{want}.bin")))
     for name, path in checks:
+        # backup_partitions 项按通配符匹配（mtd 索引运行时才知道）
+        if "*" in (path or ""):
+            import glob as _g
+            hits = _g.glob(path)
+            if hits:
+                p = hits[0]
+                print(f"  [OK] {name}: {p} ({os.path.getsize(p)} 字节)")
+            else:
+                print(f"  [MISS] {name}: {path}（第 4 步备份后生成）")
+            continue
         if path and os.path.isfile(path):
             print(f"  [OK] {name}: {path} ({os.path.getsize(path)} 字节)")
         else:
@@ -465,7 +513,9 @@ def cmd_check(args):
         _s.close()
 
     print("\n=== 6. :3333 Web 服务（原厂阶段，需先在光猫跑 an758x-stock2ubi）===")
-    if ping_ok(args.router):
+    if not prof.get("stock2ubi", True):
+        print(f"  [—] {prof['name']} 无 :3333 阶段，跳过")
+    elif ping_ok(args.router):
         import urllib.request
         try:
             urllib.request.urlopen(
@@ -512,6 +562,19 @@ def cmd_enable_telnet(args):
     from lib.telnet_open import open_telnet
     write_env("ROUTER_IP", args.router)
 
+    model = resolve_model(args)
+    prof = get_profile(model)
+
+    # always_open（ZN504）：telnet 23 永久开放，无需 Web 登录
+    if prof.get("telnet_open") == "always_open":
+        ok, msg = open_telnet(prof, args.router)
+        if ok:
+            print(f"[OK] {msg}")
+            return 0
+        print(f"[FAIL] {msg}")
+        return 1
+
+    # 其余机型：需先 Web 登录，再调用 system.cgi 开 telnet
     model, user, password = get_web_credentials(args)
     prof = get_profile(model)
     port = int(prof.get("web_port", 80))
@@ -543,14 +606,42 @@ def cmd_enable_telnet(args):
 
 def cmd_fetch_supass(args):
     from lib.web_login import web_login, web_logout
-    from lib.supass import fetch_supass_via_web, fetch_supass_via_dumpdatamodel
+    from lib.supass import (
+        fetch_supass_via_web, fetch_supass_via_dumpdatamodel,
+        fetch_supass_via_getgateway,
+    )
     write_env("ROUTER_IP", args.router)
+
+    model = resolve_model(args)
+    prof = get_profile(model)
+    mode = prof.get("supass_mode", "log_plaintext")
+
+    # ZN504：getGateWay.cgi 无需认证，直接明文取
+    if mode == "getGateway":
+        mgmt = int(prof.get("mgmt_port", 8080))
+        print(f"\n[web] ZN504 专属：GET :{mgmt}/cgi-bin/getGateWay.cgi（无需认证）...")
+        t_user, t_pass, web_pass = fetch_supass_via_getgateway(
+            args.router, mgmt_port=mgmt)
+        if t_user is None:
+            print("[FAIL] getGateWay.cgi 未返回有效数据。")
+            print("  请确认设备是 ZN504 且 http 服务正常。")
+            return 1
+        print(f"\n[OK] 已提取凭据：")
+        print(f"  telnet 用户名: {t_user}")
+        print(f"  telnet 密码:   {t_pass}")
+        print(f"  Web 超密:      {web_pass}")
+        # ZN504 的 su 密码就是 telnet 密码，写入 SU_PASS
+        write_env("SU_PASS", t_pass)
+        # Web 凭据也写入 .env（ZN504 Web 登录可能用 telecomadmin/web_pass）
+        if web_pass:
+            write_env(f"{model}_WEB_PASS", web_pass)
+        print(f"\n已将凭据写入 {ENV_FILE}")
+        return 0
 
     # 凭据（按机型）
     model, web_user, web_pass = get_web_credentials(args)
     prof = get_profile(model)
     port = int(prof.get("web_port", 80))
-    mode = prof.get("supass_mode", "log_plaintext")
 
     # 1. Web 登录
     print(f"\n[web] 登录 http://{args.router}:{port}/ "
@@ -701,7 +792,7 @@ def ensure_httpd(port=None, root=None, host=None):
     主菜单的「备份」「web-flash」自动调用，免去另开终端手动跑 httpd。
     启动前先探测设备实际访问的 host:port，已有 HTTP 服务则直接复用
     （例如另开终端跑的 httpd 或上轮残留的同项目服务），不再因端口占用崩溃。
-    注意：只监听 127.0.0.1 的程序（如部分编辑器扩展）光猫访问不到，不会被误判。
+    绑定固定使用 0.0.0.0（全接口监听），避免特定 IP 不可绑时的回退延迟。
     脚本退出时统一 POST /__shutdown 关闭（含复用的外部独立服务）。
     """
     global _httpd_singleton, _httpd_addr
@@ -718,27 +809,20 @@ def ensure_httpd(port=None, root=None, host=None):
             _httpd_singleton = "external"
             _httpd_addr = (host, port)
             return _httpd_singleton
-        # 2) 绑定：优先设备访问 IP（避开仅占 127.0.0.1 的程序），失败回退 0.0.0.0
-        candidates = [host, "0.0.0.0"] if host else ["0.0.0.0"]
-        last_err = None
-        for bind_host in candidates:
-            try:
-                srv = make_server(port, root, host=bind_host)
-                threading.Thread(target=srv.serve_forever, daemon=True).start()
-                _httpd_singleton = srv
-                # 绑具体 IP 时用该 IP 关；绑 0.0.0.0 时用回环关
-                access = "127.0.0.1" if bind_host == "0.0.0.0" else bind_host
-                _httpd_addr = (access, port)
-                print(f"[http] 内置服务已启动 {bind_host}:{port}（root={root}）")
-                return _httpd_singleton
-            except OSError as e:
-                last_err = e
-                continue
-        raise RuntimeError(
-            f"HTTP 端口 {port} 无法绑定（{last_err}）。\n"
-            f"  排查：lsof -nP -iTCP:{port} -sTCP:LISTEN\n"
-            f"  若是其他程序占用，可用 --http-port 换端口后重跑。"
-        )
+        # 2) 直接绑 0.0.0.0（光猫和本机任意网卡均可访问）
+        try:
+            srv = make_server(port, root, host="0.0.0.0")
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            _httpd_singleton = srv
+            _httpd_addr = ("127.0.0.1", port)
+            print(f"[http] 内置服务已启动 0.0.0.0:{port}（root={root}）")
+            return _httpd_singleton
+        except OSError as e:
+            raise RuntimeError(
+                f"HTTP 端口 {port} 无法绑定（{e}）。\n"
+                f"  排查：lsof -nP -iTCP:{port} -sTCP:LISTEN\n"
+                f"  若是其他程序占用，可用 --http-port 换端口后重跑。"
+            )
     return _httpd_singleton
 
 
@@ -869,20 +953,25 @@ def read_mtd_table(sess, retries=1):
     return []
 
 
-def build_backup_partitions(mtd_table, mode):
+def build_backup_partitions(mtd_table, mode, model=None):
     """按备份范围生成 [(mtd_index, 文件名), ...]。
 
-    bosa 模式备份两块关键数据：bosa（光模块校准）+ ri（射频/区域信息，
-    同样不可再生）。按名称从 /proc/mtd 定位，缺失时回退惯例 mtd6/mtd7。
+    bosa 模式备份关键数据分区：Nokia 为 bosa（光模块校准）+ ri（射频/区域信息），
+    ZN504 等中兴机型为 profile.backup_partitions 指定的分区（如 reservearea）。
+    按名称从 /proc/mtd 定位，缺失时回退惯例 mtd6/mtd7（仅 Nokia）。
     """
     if mode == "bosa":
+        prof = get_profile(model) if model else DEVICE_MODELS[DEFAULT_MODEL]
+        targets = prof.get("backup_partitions", ["bosa", "ri"])
         parts = []
-        for want, fallback in (("bosa", 6), ("ri", 7)):
+        for want in targets:
             hit = [(i, n) for i, n, _ in mtd_table if n == want]
             if hit:
                 i, n = hit[0]
+            elif want in ("bosa", "ri"):  # Nokia 惯例回退
+                i, n = (6 if want == "bosa" else 7), want
             else:
-                i, n = fallback, want
+                continue  # 中兴分区无 Nokia 回退
             parts.append((i, f"mtd{i}-{n}.bin"))
         return parts
     return [(i, f"mtd{i}-{name}.bin") for i, name, _ in mtd_table]
@@ -913,22 +1002,28 @@ def _verify_backup_files(partitions, mtd_sizes):
 
 
 def _choose_backup_mode(args):
-    """决定备份范围：CLI --mode 优先；否则交互二选一（默认仅 bosa）。
+    """决定备份范围：CLI --mode 优先；否则交互二选一（默认仅关键分区）。
 
     返回 (mode 字符串, label)。具体分区在登录后按 /proc/mtd 动态解析。
+    关键分区名称按机型 profile.backup_partitions 动态生成（Nokia=bosa+ri，
+    ZN504=reservearea）。
     """
+    model = resolve_model(args)
+    targets = get_profile(model).get("backup_partitions", ["bosa", "ri"])
+    key_label = " + ".join(targets)
     mode = getattr(args, "backup_mode", None)
     if mode not in ("bosa", "full"):
         print("\n=== 备份范围 ===")
-        print("  1. 仅备份关键分区（bosa 校准 + ri，体积小，推荐）")
+        print(f"  1. 仅备份关键分区（{key_label}，体积小，推荐）")
         print("  2. 全量备份所有分区（按设备 /proc/mtd 实际表，体积大、耗时久）")
         try:
             raw = input("请选择 [1/2]（回车默认 1）: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n默认选 1（bosa + ri）")
+            print(f"\n默认选 1（{key_label}）")
             raw = ""
         mode = "full" if raw == "2" else "bosa"
-    label = "仅关键分区（bosa + ri）" if mode == "bosa" else "全量（按 /proc/mtd）"
+    label = (f"仅关键分区（{key_label}）" if mode == "bosa"
+             else "全量（按 /proc/mtd）")
     return mode, label
 
 
@@ -959,11 +1054,13 @@ def cmd_backup(args):
             print("[FAIL] /proc/mtd 读取失败（重试后仍为空），为避免备错分区名已中止。"
                   "请重跑本步；若反复失败请先执行 login 排查会话状态")
             return 1
-        partitions = build_backup_partitions(mtd_table, mode)
+        partitions = build_backup_partitions(mtd_table, mode, model=resolve_model(args))
         mtd_sizes = {i: sz for i, _, sz in mtd_table}
         if mode == "bosa":
+            # partitions 里是 (i, 文件名)，显示分区名更直观：mtd12-reservearea.bin → reservearea
             print("[OK] 关键分区定位: "
-                  + ", ".join(f'mtd{i} "{n}"' for i, n in partitions))
+                  + ", ".join(f'mtd{i} "{n.split("-",1)[-1].rsplit(".bin",1)[0]}"'
+                              for i, n in partitions))
         else:
             print(f"[OK] 设备共 {len(partitions)} 个分区: "
                   + ", ".join(f"mtd{i}={n}" for i, n, _ in mtd_table))
@@ -1001,7 +1098,10 @@ def cmd_backup(args):
             return 1
         print(f"\n[OK] 备份完成并通过大小校验（{scope_label}，"
               f"{len(partitions)}/{len(partitions)} 个文件）。文件在 {BACKUP_DIR}")
-        print("  务必把 bosa（校准）和 ri 这两个文件单独多存几处！")
+        # Nokia 的 bosa（校准）/ri 丢了无法再生；ZN504 的 reservearea 同理
+        key_parts = get_profile(resolve_model(args)).get(
+            "backup_partitions", ["bosa", "ri"])
+        print(f"  务必把 {'、'.join(key_parts)} 这些文件单独多存几处！")
     finally:
         sess.close()
     return 0
@@ -1010,6 +1110,11 @@ def cmd_backup(args):
 def cmd_run_stock2ubi(args):
     """在光猫上下载并后台运行 an758x-stock2ubi，起 :3333。返回 0/1。"""
     from lib.telnet_session import TelnetSession
+    model = resolve_model(args)
+    prof = get_profile(model)
+    if not prof.get("stock2ubi", True):
+        print(f"[—] {prof['name']} 无 an758x-stock2ubi 流程（该机型无 :3333 阶段），跳过。")
+        return 0
     tool = os.path.join(TOOLS_DIR, "an758x-stock2ubi")
     if not os.path.isfile(tool):
         print(f"[FAIL] 免拆包不存在: {tool}")
@@ -1131,6 +1236,10 @@ def cmd_web_backup(args):
 def cmd_web_flash(args):
     from lib.http_flash import flash_bootloader
     model = resolve_model(args)
+    prof = get_profile(model)
+    if not prof.get("stock2ubi", True):
+        print(f"[—] {prof['name']} 无 web-flash 刷引导流程（无 :3333 阶段），跳过。")
+        return 1
     bl2_def, fip_def = find_bl2_fip(model)
     bl2 = args.bl2 or bl2_def
     fip = args.fip or fip_def
@@ -1192,30 +1301,46 @@ def cmd_uboot_flash(args):
     import urllib.request
     host = args.uboot_host
     model = resolve_model(args)
+    prof = get_profile(model)
+    if not prof.get("uboot_recovery", True):
+        print(f"[—] {prof['name']} 无 U-Boot 恢复页刷机流程（无 192.168.0.1 阶段），跳过。")
+        return 1
     bl2_def, fip_def = find_bl2_fip(model)
     bl2 = args.bl2 or bl2_def
     fip = args.fip or fip_def
-    bosa = args.bosa
-    if not bosa:
-        cand = os.path.join(BACKUP_DIR, "mtd6-bosa.bin")
-        if os.path.isfile(cand):
-            bosa = cand
-    ri = getattr(args, "ri", None)
-    if not ri:
-        cand = os.path.join(BACKUP_DIR, "mtd7-ri.bin")
-        if os.path.isfile(cand):
-            ri = cand
     itb = args.itb or _find_itb(model)
+
+    # 板级数据刷写：从 profile 读 target 列表，每项 {target, file_key}
+    # 默认 bosa+ri 兼容旧机型；ZN504 等新机型用自己的 factory+reservearea
+    bd_items = prof.get("board_data_flash", [
+        {"target": "bosa", "file_key": "bosa"},
+        {"target": "ri",    "file_key": "ri"},
+    ])
+    # 把每个 file_key 解析成实际备份文件路径
+    bd_files = []  # [(target, file_key, path_or_None)]
+    for item in bd_items:
+        target = item["target"]
+        fk = item["file_key"]
+        # CLI --bosa / --ri 等命名参数向后兼容：允许用户显式覆盖 target 的文件
+        cli_override = getattr(args, fk, None) or getattr(args, target, None)
+        if cli_override and os.path.isfile(cli_override):
+            bd_files.append((target, fk, cli_override))
+        else:
+            bd_files.append((target, fk, find_backup_by_name(fk)))
+    bd_label = " + ".join(
+        f"{t}({fk})" if t != fk else t
+        for t, fk, _ in bd_files
+    )
 
     # 5 步定义：(编号, 名称, 文件或None, run_step 关键字参数)
     # 任意一步都可独立重复执行
-    # 第3步 = 板级数据两项：bosa（校准）+ ri（新款 U-Boot 新增，MD/TF 都要刷）
+    # 第3步 = 板级数据（target 列表按机型 profile 驱动，bosa/ri 或 factory）
     steps_def = [
         (1, "刷 preloader (flash-bl2)", bl2,
          dict(operation="flash-bl2", timeout=120)),
         (2, "重建 UBI (ubi-rebuild)", None,
          dict(operation="ubi-rebuild", timeout=300)),
-        (3, "刷板级数据 (flash-board-data: bosa + ri)", None,
+        (3, f"刷板级数据 (flash-board-data: {bd_label})", None,
          dict(operation="flash-board-data", timeout=120)),
         (4, "刷 U-Boot (flash-uboot)", fip,
          dict(operation="flash-uboot", timeout=120)),
@@ -1228,14 +1353,14 @@ def cmd_uboot_flash(args):
     for num, label, path, kw in steps_def:
         if path and not os.path.isfile(path):
             unavailable[num] = path
-    # 第3步需要 bosa + ri 两个备份文件（新 U-Boot 增加 ri 写入）
+    # 第3步需要全部板级数据备份文件
     missing_bd = [
-        f"mtd{6 if t == 'bosa' else 7}-{t}.bin"
-        for t, p in (("bosa", bosa), ("ri", ri))
+        f"mtd*-{fk}.bin"
+        for _, fk, p in bd_files
         if not p or not os.path.isfile(p)
     ]
     if missing_bd:
-        unavailable[3] = "、".join(os.path.join(BACKUP_DIR, f) for f in missing_bd)
+        unavailable[3] = "、".join(missing_bd)
 
     # 前置：恢复页可达（TCP 探活；GET / 会因根路径非 200 误判）
     print(f"目标: http://{host}  （U-Boot 恢复页，设备须处于恢复模式）")
@@ -1254,20 +1379,22 @@ def cmd_uboot_flash(args):
         pass  # 状态探测失败不阻塞，各步骤自身会校验
 
     def do_board_data():
-        """第3步：刷 bosa + ri 板级数据（先 bosa 后 ri，各自上传+下发任务）。"""
+        """第3步：按 profile board_data_flash 列表逐一刷板级数据。
+        每次刷完之间等 1 秒缓冲（设备擦写后恢复页短暂忙，日志也看得清）。"""
         t0 = time.time()
         try:
-            run_step(host, "第3步a 刷 bosa 板级数据 (flash-board-data)",
-                     upload_path=bosa, operation="flash-board-data",
-                     target="bosa", timeout=120)
-            run_step(host, "第3步b 刷 ri 板级数据 (flash-board-data)",
-                     upload_path=ri, operation="flash-board-data",
-                     target="ri", timeout=120)
+            for idx, (target, fk, path) in enumerate(bd_files, 1):
+                run_step(host, f"第3步{chr(ord('a')+idx-1)} 刷板级数据 target={target} "
+                               f"(备份 mtd*-{fk}.bin)",
+                         upload_path=path, operation="flash-board-data",
+                         target=target, timeout=120)
+                if idx < len(bd_files):
+                    time.sleep(2)
         except UbootError as e:
             print(f"\n[FAIL] 第 3 步失败: {e}")
             print("  设备仍在 U-Boot 恢复模式，排查后可在菜单重新执行该步骤。")
             return False
-        print(f"[OK] 第 3 步「刷板级数据 (bosa + ri)」成功（耗时 {time.time()-t0:.0f}s）")
+        print(f"[OK] 第 3 步「刷板级数据 ({bd_label})」成功（耗时 {time.time()-t0:.0f}s）")
         return True
 
     def do_step(num):
@@ -1276,7 +1403,8 @@ def cmd_uboot_flash(args):
         if num in unavailable:
             print(f"[FAIL] 第 {num} 步所需文件不存在: {unavailable[num]}")
             if num == 3:
-                print("  请先完成备份（bosa 模式会同时备份 mtd6-bosa.bin 和 mtd7-ri.bin）")
+                keys = [fk for _, fk, _ in bd_files]
+                print(f"  请先完成备份（需包含分区: {', '.join(keys)}）")
             return False
         if num == 3:
             return do_board_data()
@@ -1344,7 +1472,7 @@ def cmd_uboot_flash(args):
                 done.add(num)
         elif choice == "a":
             if not args.yes:
-                print("将按序执行 1→5（bl2 → UBI → bosa+ri → u-boot → 固件），任意一步失败即中止。")
+                print(f"将按序执行 1→5（bl2 → UBI → {bd_label} → u-boot → 固件），任意一步失败即中止。")
                 try:
                     ans = input("输入 y 确认全刷，其他任意键取消: ").strip().lower()
                 except (EOFError, KeyboardInterrupt):
@@ -1413,26 +1541,6 @@ def cmd_menu(args):
         if not hasattr(a, k):
             setattr(a, k, v)
 
-    def step_web_flash():
-        """第 5 步编排：先在光猫拉起 :3333（run-stock2ubi），再刷引导。"""
-        if cmd_run_stock2ubi(a) != 0:
-            print("\n[FAIL] an758x-stock2ubi 未就绪，已中止刷引导。")
-            return 1
-        return cmd_web_flash(a) or 0
-
-    # (编号, 名称, 处理函数)
-    items = [
-        (1, "检查环境", lambda: cmd_check(a)),
-        (2, "开启 telnet（Web 登录自动开）", lambda: cmd_enable_telnet(a)),
-        (3, "查询 SuPassword 超密", lambda: cmd_fetch_supass(a)),
-        (4, "备份 mtd 分区（可选 bosa校准+ri 或全量，dd|curl）", lambda: cmd_backup(a)),
-        (5, "刷引导（自动 run-stock2ubi → web-flash）", step_web_flash),
-        (6, "U-Boot 恢复页刷机（192.168.0.1，5 步菜单）",
-         lambda: cmd_uboot_flash(a)),
-    ]
-    by_num = {n: fn for n, _, fn in items}
-    done = set()
-
     print("=" * 60)
     print("         AN758x-免拆刷机助手")
     print("=" * 60)
@@ -1444,6 +1552,42 @@ def cmd_menu(args):
     write_env("DEVICE_MODEL", model)  # 记住选择，下次运行默认使用
     cur_name = DEVICE_MODELS[model]['name']
     print(f"[OK] 当前机型: {model} {cur_name}（已记入 .env，下次默认使用）")
+
+    def step_web_flash():
+        """第 5 步编排：先在光猫拉起 :3333（run-stock2ubi），再刷引导。"""
+        if cmd_run_stock2ubi(a) != 0:
+            print("\n[FAIL] an758x-stock2ubi 未就绪，已中止刷引导。")
+            return 1
+        return cmd_web_flash(a) or 0
+
+    # (编号, 名称, 处理函数)
+    # 步骤名称按所选机型能力动态生成（ZN504 无 :3333/U-Boot 恢复页流程）
+    _prof = get_profile(model)
+    _has_s2u = _prof.get("stock2ubi", True)
+    _has_uboot = _prof.get("uboot_recovery", True)
+
+    def _skip_step(label):
+        print(f"[—] {_prof['name']} 不支持「{label}」（无 :3333/U-Boot 恢复页阶段）。")
+        print("  该机型的刷机方式将在后续版本加入。")
+        return 1
+
+    items = [
+        (1, "检查环境", lambda: cmd_check(a)),
+        (2, "开启 telnet（Web 登录自动开）" if _prof.get("telnet_open") != "always_open"
+            else "开启 telnet（ZN504 永久开放，验证可达性）",
+         lambda: cmd_enable_telnet(a)),
+        (3, "查询 SuPassword 超密", lambda: cmd_fetch_supass(a)),
+        (4, "备份 mtd 分区（可选关键分区或全量，dd|curl）", lambda: cmd_backup(a)),
+        (5, "刷引导（自动 run-stock2ubi → web-flash）" if _has_s2u
+            else "刷引导（该机型无此流程）",
+         step_web_flash if _has_s2u else (lambda: _skip_step("刷引导"))),
+        (6, "U-Boot 恢复页刷机（192.168.0.1，5 步菜单）" if _has_uboot
+            else "U-Boot 恢复页刷机（该机型无此流程）",
+         lambda: cmd_uboot_flash(a)),
+    ]
+    by_num = {n: fn for n, _, fn in items}
+    done = set()
+
     while True:
         print(f"\n{'='*60}\n 刷机主菜单（机型: {model} {cur_name}）\n{'='*60}")
         for num, name, _ in items:

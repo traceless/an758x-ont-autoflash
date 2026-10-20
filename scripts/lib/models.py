@@ -14,6 +14,11 @@
                 cgi_plain=TF/MF（POST /system.cgi?telnet+off/on，body=data&csrf_token=）
   supass_mode   取超密方式：log_plaintext=日志包明文；dumpdatamodel_aes=dumpdatamodel 密文 AES 解密
   telnet_login  telnet 登录取向：user_su=user/useradmin + su；root=root + 超密直登
+  telnet_user   （可选）telnet 登录名回车默认值；仅全厂通用凭据的机型声明（如 ZN504），
+                MD 等贴纸凭据机型不声明（交互询问）
+  telnet_pass   （可选）telnet 密码/su 密码回车默认值，同上
+  stock2ubi     （可选）False 表示该机型无 an758x-stock2ubi 流程（默认有）
+  uboot_recovery （可选）False 表示该机型无 192.168.0.1 U-Boot 恢复页（默认有）
 """
 
 DEFAULT_MODEL = "MD"
@@ -29,6 +34,11 @@ DEVICE_MODELS = {
         "telnet_open": "cgi_toggle",
         "supass_mode": "log_plaintext",
         "telnet_login": "user_su",
+        # flash-board-data 目标列表：按序刷写，每项 target + 备份分区名
+        "board_data_flash": [
+            {"target": "bosa", "file_key": "bosa"},
+            {"target": "ri",    "file_key": "ri"},
+        ],
     },
     "TF": {
         "name": "诺基亚 XG-040G-TF（电信）",
@@ -40,6 +50,10 @@ DEVICE_MODELS = {
         "telnet_open": "cgi_plain",
         "supass_mode": "dumpdatamodel_aes",
         "telnet_login": "root",  # root + 超密直登，无需贴纸账号
+        "board_data_flash": [
+            {"target": "bosa", "file_key": "bosa"},
+            {"target": "ri",    "file_key": "ri"},
+        ],
     },
     # MF 实测（XG-040G-MF 真机 2026-10-14 验证）：
     #   登录 :80 goahead，表单 name/pswd，明文提交即返回 299 + sid；
@@ -56,6 +70,35 @@ DEVICE_MODELS = {
         "telnet_open": "cgi_plain",
         "supass_mode": "dumpdatamodel_aes",
         "telnet_login": "root",
+        "board_data_flash": [
+            {"target": "bosa", "file_key": "bosa"},
+            {"target": "ri",    "file_key": "ri"},
+        ],
+    },
+    # ZN504 实测（ECONET TClinux 平台 2026-10-18 验证）：
+    #   Web 取超密 = GET :8080/cgi-bin/getGateWay.cgi 无需认证直接返回明文；
+    #   telnet :23 永久开放，无需 system.cgi 开启；
+    #   登录 = telnetadmin/telnetadmin + su → root（uid=0）；
+    #   分区 = 兆能布局（mtd0 bootloader / mtd1 romfile / mtd12 reservearea 等）；
+    #   U-Boot 恢复页 192.168.0.1，flash-board-data 目标名 = factory。
+    "ZN504": {
+        "name": "兆能 ZN504（电信）",
+        "uboot_dir": "uboot-zn504",
+        "default_user": "telnetadmin",
+        "default_pass": "telnetadmin",
+        "web_port": 8080,
+        "mgmt_port": 8080,
+        "telnet_open": "always_open",  # telnet 23 永久开放
+        "supass_mode": "getGateway",   # GET getGateWay.cgi 明文直取
+        "telnet_login": "user_su",
+        "telnet_user": "telnetadmin",
+        "telnet_pass": "telnetadmin",
+        # 分区备份目标（按名称从 /proc/mtd 定位，backup/ 目录下文件名为 mtd{X}-reservearea.bin）
+        "backup_partitions": ["reservearea"],
+        # ZN504 板级数据刷写：上传 reservearea 备份 → target=factory
+        "board_data_flash": [
+            {"target": "factory", "file_key": "reservearea"},
+        ],
     },
 }
 

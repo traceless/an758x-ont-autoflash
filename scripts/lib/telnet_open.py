@@ -56,6 +56,12 @@ def open_telnet(profile, router_ip, opener=None, timeout=10):
     mode = profile.get("telnet_open", "cgi_toggle")
     mgmt = int(profile.get("mgmt_port", 80))
 
+    if mode == "always_open":
+        # ZN504 等：telnet 23 永久开放，无需 Web 操作，直接验证可达性
+        if _telnet_ready(router_ip):
+            return True, "telnet 服务已处于开启状态（:23 永久开放）"
+        return False, "telnet :23 不可达（请检查设备是否正常启动）"
+
     if mode == "cgi_toggle":
         # MD：先 off 清残留会话，再 on 开启
         for act in ("telnet+off", "telnet+on"):
